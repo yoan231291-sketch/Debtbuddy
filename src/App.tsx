@@ -4,6 +4,7 @@ import {
   useMemo,
   useState,
   useEffect,
+  useRef,
   type ReactNode,
 } from "react";
 import {
@@ -48,6 +49,11 @@ import {
   Send,
   Star,
   Fingerprint,
+  FileSignature,
+  FileText,
+  PenLine,
+  Eraser,
+  CheckCheck,
   type LucideIcon,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
@@ -62,6 +68,9 @@ import type {
   Debt,
   AppNotification,
   Toast,
+  Contract,
+  ContractTemplate,
+  ContractStatus,
 } from "./lib/types";
 
 /* ============================== TYPES ============================== */
@@ -352,6 +361,10 @@ interface Store {
   pushNotification: (n: Omit<AppNotification, "id" | "date" | "read">) => void;
   removeDebt: (id: string) => void;
   resetData: () => void;
+  contracts: Contract[];
+  createContract: (c: Contract) => void;
+  signContract: (contractId: string, who: "admin" | "client", signature: string) => void;
+  cancelContract: (contractId: string) => void;
   logout: () => void;
 }
 
@@ -1051,8 +1064,16 @@ function StatCard({
   );
 }
 
-function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreate: () => void }) {
-  const { role, debts } = useStore();
+function Dashboard({
+  onOpen,
+  onCreate,
+  onContracts,
+}: {
+  onOpen: (id: string) => void;
+  onCreate: () => void;
+  onContracts: () => void;
+}) {
+  const { role, debts, contracts } = useStore();
   const isAdmin = role === "admin";
 
   const totalOutstanding = debts.reduce((s, d) => s + balance(d), 0);
@@ -1095,6 +1116,21 @@ function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreat
           tone="bg-emerald-500/10 text-emerald-500"
         />
       </div>
+
+      {isAdmin && (
+        <Card3 className="flex items-center gap-3 p-4" onClick={onContracts}>
+          <div className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-500/10 text-violet-500">
+            <FileSignature className="h-5 w-5" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-bold text-slate-900 dark:text-white">Contratos digitales</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {contracts.length > 0 ? `${contracts.length} contrato(s) · firma electrónica` : "Crea contratos con firma"}
+            </p>
+          </div>
+          <ChevronRight className="h-5 w-5 text-slate-300" />
+        </Card3>
+      )}
 
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold text-slate-900 dark:text-white">
@@ -2325,9 +2361,525 @@ function SettingsScreen({ onBack, onWallet }: { onBack: () => void; onWallet: ()
   );
 }
 
+/* ============================== CONTRACTS ============================== */
+
+const templateMeta: Record<ContractTemplate, { label: string; icon: LucideIcon; terms: string }> = {
+  vehicle_sale: {
+    label: "Venta de vehículo",
+    icon: Car,
+    terms:
+      "El vendedor transfiere la propiedad del vehículo descrito al comprador, quien se compromete a pagar el balance financiado según el calendario acordado. El vehículo se entrega en las condiciones aceptadas por ambas partes. El comprador asume la responsabilidad del bien desde la entrega.",
+  },
+  personal_loan: {
+    label: "Préstamo personal",
+    icon: HandCoins,
+    terms:
+      "El prestamista entrega al prestatario el monto acordado, que será reembolsado en las cuotas y fechas establecidas. El incumplimiento generará la penalización por atraso indicada. Ambas partes aceptan las condiciones de este acuerdo de buena fe.",
+  },
+  payment_agreement: {
+    label: "Acuerdo de pago",
+    icon: FileText,
+    terms:
+      "Las partes acuerdan un plan de pago para saldar la obligación existente. El deudor se compromete a cumplir las cuotas en las fechas pactadas. El retraso en los pagos generará los cargos por mora establecidos en este documento.",
+  },
+  custom: {
+    label: "Contrato personalizado",
+    icon: FileSignature,
+    terms: "",
+  },
+};
+
+const contractStatusMeta: Record<
+  ContractStatus,
+  { label: string; tone: "slate" | "amber" | "indigo" | "emerald" | "rose" }
+> = {
+  draft: { label: "Borrador", tone: "slate" },
+  pending_signature: { label: "Pendiente de firma", tone: "amber" },
+  signed: { label: "Firmado", tone: "indigo" },
+  completed: { label: "Completado", tone: "emerald" },
+  cancelled: { label: "Cancelado", tone: "rose" },
+};
+
+function SignaturePad({ onSave, onClose }: { onSave: (dataUrl: string) => void; onClose: () => void }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  const drawing = useRef(false);
+  const dirty = useRef(false);
+
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const ratio = window.devicePixelRatio || 1;
+    c.width = c.offsetWidth * ratio;
+    c.height = c.offsetHeight * ratio;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(ratio, ratio);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#0f172a";
+  }, []);
+
+  const pos = (e: React.PointerEvent) => {
+    const c = ref.current!;
+    const r = c.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  const down = (e: React.PointerEvent) => {
+    drawing.current = true;
+    const ctx = ref.current!.getContext("2d")!;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const move = (e: React.PointerEvent) => {
+    if (!drawing.current) return;
+    const ctx = ref.current!.getContext("2d")!;
+    const p = pos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    dirty.current = true;
+  };
+  const up = () => (drawing.current = false);
+  const clear = () => {
+    const c = ref.current!;
+    c.getContext("2d")!.clearRect(0, 0, c.width, c.height);
+    dirty.current = false;
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-slate-500 dark:text-slate-400">Dibuja tu firma en el recuadro:</p>
+      <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white dark:border-white/15">
+        <canvas
+          ref={ref}
+          onPointerDown={down}
+          onPointerMove={move}
+          onPointerUp={up}
+          onPointerLeave={up}
+          className="h-44 w-full touch-none rounded-2xl"
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <Button variant="outline" onClick={clear}>
+          <Eraser className="h-4 w-4" /> Limpiar
+        </Button>
+        <Button variant="ghost" onClick={onClose}>
+          Cancelar
+        </Button>
+        <Button
+          onClick={() => {
+            if (!dirty.current) return;
+            onSave(ref.current!.toDataURL("image/png"));
+          }}
+        >
+          <Check className="h-4 w-4" /> Firmar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ContractsScreen({ onBack }: { onBack: () => void }) {
+  const { contracts } = useStore();
+  const [view, setView] = useState<"list" | "create">("list");
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  if (openId) {
+    return <ContractDetail contractId={openId} onBack={() => setOpenId(null)} />;
+  }
+  if (view === "create") {
+    return <ContractForm onBack={() => setView("list")} onDone={() => setView("list")} />;
+  }
+
+  return (
+    <div className="space-y-5">
+      <ScreenHeader
+        title="Contratos digitales"
+        onBack={onBack}
+        right={
+          <button
+            onClick={() => setView("create")}
+            className="grid h-10 w-10 place-items-center rounded-full bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
+          >
+            <Plus className="h-5 w-5" />
+          </button>
+        }
+      />
+      {contracts.length === 0 ? (
+        <Card3 className="flex flex-col items-center gap-3 p-8 text-center">
+          <div className="grid h-14 w-14 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-500">
+            <FileSignature className="h-7 w-7" />
+          </div>
+          <div>
+            <p className="font-bold text-slate-900 dark:text-white">Sin contratos todavía</p>
+            <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+              Crea contratos de venta, préstamo o acuerdos de pago con firma digital.
+            </p>
+          </div>
+          <Button onClick={() => setView("create")}>
+            <Plus className="h-4 w-4" /> Nuevo contrato
+          </Button>
+        </Card3>
+      ) : (
+        <div className="space-y-3">
+          {contracts.map((c) => {
+            const tm = templateMeta[c.template];
+            const sm = contractStatusMeta[c.status];
+            return (
+              <Card3 key={c.id} className="p-4" onClick={() => setOpenId(c.id)}>
+                <div className="flex items-center gap-3">
+                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-500">
+                    <tm.icon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-bold text-slate-900 dark:text-white">{c.title}</p>
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                      {c.clientName} · {tm.label}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-extrabold text-slate-900 dark:text-white">{money(c.totalAmount)}</p>
+                    <Badge tone={sm.tone}>{sm.label}</Badge>
+                  </div>
+                </div>
+              </Card3>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContractForm({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+  const { createContract, toast } = useStore();
+  const [template, setTemplate] = useState<ContractTemplate>("vehicle_sale");
+  const [f, setF] = useState({
+    clientName: "",
+    clientEmail: "",
+    clientPhone: "",
+    clientAddress: "",
+    description: "",
+    total: "",
+    down: "0",
+    installments: "12",
+    frequency: "monthly" as Frequency,
+    startDate: new Date().toISOString().slice(0, 10),
+    dailyLateFee: "10",
+    terms: templateMeta.vehicle_sale.terms,
+  });
+  const set = (k: keyof typeof f, v: string) => setF((p) => ({ ...p, [k]: v }));
+
+  const pickTemplate = (t: ContractTemplate) => {
+    setTemplate(t);
+    setF((p) => ({ ...p, terms: templateMeta[t].terms || p.terms }));
+  };
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const total = Number(f.total) || 0;
+    const down = Number(f.down) || 0;
+    const inst = Math.max(1, Number(f.installments) || 1);
+    const due = new Date(f.startDate);
+    const months = f.frequency === "weekly" ? inst / 4 : f.frequency === "biweekly" ? inst / 2 : inst;
+    due.setMonth(due.getMonth() + Math.ceil(months));
+    const c: Contract = {
+      id: newId(),
+      template,
+      title: `${templateMeta[template].label} — ${f.clientName || "Cliente"}`,
+      clientName: f.clientName || "Cliente",
+      clientEmail: f.clientEmail,
+      clientPhone: f.clientPhone,
+      clientAddress: f.clientAddress,
+      description: f.description,
+      terms: f.terms,
+      totalAmount: total,
+      downPayment: down,
+      financedAmount: total - down,
+      installments: inst,
+      frequency: f.frequency,
+      startDate: new Date(f.startDate).toISOString(),
+      endDate: due.toISOString(),
+      dailyLateFee: Number(f.dailyLateFee) || 10,
+      status: "pending_signature",
+      createdAt: new Date().toISOString(),
+    };
+    createContract(c);
+    toast({ title: "Contrato creado", desc: "Listo para firmar.", variant: "success" });
+    onDone();
+  };
+
+  return (
+    <div className="space-y-5">
+      <ScreenHeader title="Nuevo contrato" onBack={onBack} />
+      <form onSubmit={submit} className="space-y-4">
+        <Card3 className="space-y-3 p-4">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Plantilla</p>
+          <div className="grid grid-cols-2 gap-2">
+            {(Object.keys(templateMeta) as ContractTemplate[]).map((t) => {
+              const tm = templateMeta[t];
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => pickTemplate(t)}
+                  className={cx(
+                    "flex items-center gap-2 rounded-2xl border p-3 text-left text-sm font-semibold transition",
+                    template === t
+                      ? "border-indigo-600 bg-indigo-500/5 text-indigo-600 dark:text-indigo-400"
+                      : "border-slate-200 text-slate-600 dark:border-white/10 dark:text-slate-300"
+                  )}
+                >
+                  <tm.icon className="h-4 w-4 shrink-0" /> {tm.label}
+                </button>
+              );
+            })}
+          </div>
+        </Card3>
+
+        <Card3 className="space-y-3.5 p-4">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Cliente</p>
+          <Field label="Nombre del cliente" icon={User}>
+            <Input value={f.clientName} onChange={(e) => set("clientName", e.target.value)} required />
+          </Field>
+          <div className="grid grid-cols-2 gap-3.5">
+            <Field label="Teléfono" icon={Phone}>
+              <Input value={f.clientPhone} onChange={(e) => set("clientPhone", e.target.value)} />
+            </Field>
+            <Field label="Email" icon={Mail}>
+              <Input type="email" value={f.clientEmail} onChange={(e) => set("clientEmail", e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Dirección" icon={FileText}>
+            <Input value={f.clientAddress} onChange={(e) => set("clientAddress", e.target.value)} />
+          </Field>
+        </Card3>
+
+        <Card3 className="space-y-3.5 p-4">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Términos</p>
+          <div className="grid grid-cols-2 gap-3.5">
+            <Field label="Monto total" icon={CircleDollarSign}>
+              <Input type="number" value={f.total} onChange={(e) => set("total", e.target.value)} required />
+            </Field>
+            <Field label="Pago inicial" icon={Banknote}>
+              <Input type="number" value={f.down} onChange={(e) => set("down", e.target.value)} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3.5">
+            <Field label="Cuotas" icon={LayoutGrid}>
+              <Input type="number" value={f.installments} onChange={(e) => set("installments", e.target.value)} />
+            </Field>
+            <Field label="Interés por atraso/día" icon={Percent}>
+              <Input type="number" value={f.dailyLateFee} onChange={(e) => set("dailyLateFee", e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Frecuencia" icon={Clock}>
+            <div className="grid grid-cols-3 gap-2">
+              {(["monthly", "biweekly", "weekly"] as Frequency[]).map((fr) => (
+                <button
+                  key={fr}
+                  type="button"
+                  onClick={() => set("frequency", fr)}
+                  className={cx(
+                    "rounded-2xl border py-2.5 text-sm font-semibold transition",
+                    f.frequency === fr
+                      ? "border-indigo-600 bg-indigo-600 text-white"
+                      : "border-slate-200 text-slate-600 dark:border-white/10 dark:text-slate-300"
+                  )}
+                >
+                  {freqLabel[fr]}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Fecha de inicio" icon={Calendar}>
+            <Input type="date" value={f.startDate} onChange={(e) => set("startDate", e.target.value)} />
+          </Field>
+          <Field label="Condiciones / términos adicionales">
+            <textarea
+              value={f.terms}
+              onChange={(e) => set("terms", e.target.value)}
+              rows={5}
+              className={inputCls}
+            />
+          </Field>
+        </Card3>
+
+        <Button type="submit" full size="lg">
+          <FileSignature className="h-4 w-4" /> Crear contrato
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+function ContractDetail({ contractId, onBack }: { contractId: string; onBack: () => void }) {
+  const { contracts, signContract, cancelContract, toast } = useStore();
+  const c = contracts.find((x) => x.id === contractId);
+  const [signing, setSigning] = useState<null | "admin" | "client">(null);
+  if (!c) return null;
+  const tm = templateMeta[c.template];
+  const sm = contractStatusMeta[c.status];
+  const locked = c.status === "completed" || c.status === "cancelled";
+
+  const metric = (label: string, value: string) => (
+    <div className="flex items-center justify-between py-1.5">
+      <span className="text-sm text-slate-500 dark:text-slate-400">{label}</span>
+      <span className="text-sm font-bold text-slate-900 dark:text-white">{value}</span>
+    </div>
+  );
+
+  const SignBox = ({ who, name, sig, at }: { who: "admin" | "client"; name: string; sig?: string; at?: string }) => (
+    <div className="rounded-2xl border border-slate-200 p-3 dark:border-white/10">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+        {who === "admin" ? "Administrador" : "Cliente"}
+      </p>
+      {sig ? (
+        <>
+          <img src={sig} alt="firma" className="my-1 h-16 w-full rounded-lg bg-white object-contain" />
+          <p className="flex items-center gap-1 text-xs font-semibold text-emerald-500">
+            <CheckCheck className="h-3.5 w-3.5" /> Firmado {at ? `· ${fmtDate(at)}` : ""}
+          </p>
+        </>
+      ) : (
+        <button
+          disabled={locked}
+          onClick={() => setSigning(who)}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 py-4 text-sm font-semibold text-slate-500 disabled:opacity-50 dark:border-white/15 dark:text-slate-300"
+        >
+          <PenLine className="h-4 w-4" /> Firmar como {who === "admin" ? "administrador" : "cliente"}
+        </button>
+      )}
+      <p className="mt-1 truncate text-xs text-slate-400">{name}</p>
+    </div>
+  );
+
+  const pdfData = {
+    title: c.title,
+    templateLabel: tm.label,
+    adminName: "Administrador",
+    clientName: c.clientName,
+    clientEmail: c.clientEmail,
+    clientPhone: c.clientPhone,
+    clientAddress: c.clientAddress,
+    total: money(c.totalAmount),
+    downPayment: money(c.downPayment),
+    financed: money(c.financedAmount),
+    installments: String(c.installments),
+    frequency: freqLabel[c.frequency],
+    dailyLateFee: money(c.dailyLateFee),
+    startDate: c.startDate ? fmtDate(c.startDate) : "—",
+    endDate: c.endDate ? fmtDate(c.endDate) : "—",
+    status: sm.label,
+    terms: c.terms,
+    adminSignature: c.adminSignature,
+    clientSignature: c.clientSignature,
+  };
+
+  return (
+    <div className="space-y-5">
+      <ScreenHeader title="Detalle del contrato" onBack={onBack} right={<Badge tone={sm.tone}>{sm.label}</Badge>} />
+
+      <Card3 className="overflow-hidden">
+        <div className="bg-gradient-to-br from-indigo-600 to-violet-600 p-5 text-white">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-white/20">
+              <tm.icon className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-lg font-bold">{c.title}</p>
+              <p className="text-sm text-white/80">{tm.label}</p>
+            </div>
+          </div>
+          <p className="mt-4 text-sm text-white/80">Monto total</p>
+          <p className="text-3xl font-extrabold">{money(c.totalAmount)}</p>
+        </div>
+        <div className="p-5">
+          {metric("Cliente", c.clientName)}
+          {metric("Pago inicial", money(c.downPayment))}
+          {metric("Balance financiado", money(c.financedAmount))}
+          {metric("Cuotas", `${c.installments} · ${freqLabel[c.frequency]}`)}
+          {metric("Interés por atraso", `${money(c.dailyLateFee)} / día`)}
+          {metric("Vigencia", `${c.startDate ? fmtDate(c.startDate) : "—"} → ${c.endDate ? fmtDate(c.endDate) : "—"}`)}
+        </div>
+      </Card3>
+
+      {c.terms && (
+        <Card3 className="p-4">
+          <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Condiciones</p>
+          <p className="whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">{c.terms}</p>
+        </Card3>
+      )}
+
+      <div>
+        <h2 className="mb-3 text-base font-bold text-slate-900 dark:text-white">Firmas electrónicas</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <SignBox who="admin" name="Administrador" sig={c.adminSignature} at={c.adminSignedAt} />
+          <SignBox who="client" name={c.clientName} sig={c.clientSignature} at={c.clientSignedAt} />
+        </div>
+      </div>
+
+      {c.status === "completed" && c.debtId && (
+        <Card3 className="flex items-center gap-3 p-4">
+          <div className="grid h-10 w-10 place-items-center rounded-2xl bg-emerald-500/10 text-emerald-500">
+            <CheckCircle2 className="h-5 w-5" />
+          </div>
+          <p className="flex-1 text-sm text-slate-600 dark:text-slate-300">
+            Contrato firmado. Se creó automáticamente la deuda y su calendario de pagos.
+          </p>
+        </Card3>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <Button
+          variant="outline"
+          onClick={async () => {
+            const { downloadContractPdf } = await import("./lib/pdf");
+            downloadContractPdf(pdfData);
+            toast({ title: "PDF descargado", desc: "Contrato guardado.", variant: "success" });
+          }}
+        >
+          <Download className="h-4 w-4" /> Descargar PDF
+        </Button>
+        <a
+          href={`https://wa.me/?text=${encodeURIComponent(
+            `Hola ${c.clientName} 👋 Te comparto el contrato "${c.title}" en 2PayBack para tu firma.`
+          )}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <Button variant="outline" full>
+            <Share2 className="h-4 w-4" /> Compartir
+          </Button>
+        </a>
+      </div>
+
+      {!locked && (
+        <Button full variant="ghost" className="text-rose-500" onClick={() => cancelContract(c.id)}>
+          <X className="h-4 w-4" /> Cancelar contrato
+        </Button>
+      )}
+
+      <Modal open={!!signing} onClose={() => setSigning(null)} title="Firma electrónica">
+        {signing && (
+          <SignaturePad
+            onClose={() => setSigning(null)}
+            onSave={(dataUrl) => {
+              signContract(c.id, signing, dataUrl);
+              setSigning(null);
+              toast({ title: "Firma registrada", variant: "success" });
+            }}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
 /* ============================== SHELL / NAV ============================== */
 
-type Screen = "dashboard" | "create" | "detail" | "wallet" | "notifications" | "settings";
+type Screen = "dashboard" | "create" | "detail" | "wallet" | "notifications" | "settings" | "contracts";
 
 function AppShell() {
   const { role, dark, toggleDark, notifications, user } = useStore();
@@ -2388,7 +2940,13 @@ function AppShell() {
       {/* Content */}
       <main className="mx-auto max-w-2xl px-4 pb-28 pt-5">
         <div key={screen + (selected || "")} className="animate-fade-in">
-          {screen === "dashboard" && <Dashboard onOpen={openDebt} onCreate={() => go("create")} />}
+          {screen === "dashboard" && (
+            <Dashboard
+              onOpen={openDebt}
+              onCreate={() => go("create")}
+              onContracts={() => go("contracts")}
+            />
+          )}
           {screen === "create" && (
             <CreateDebt onBack={() => go("dashboard")} onCreated={(d) => openDebt(d.id)} />
           )}
@@ -2396,6 +2954,7 @@ function AppShell() {
             <DebtDetail debtId={selected} onBack={() => go("dashboard")} />
           )}
           {screen === "wallet" && <Wallet2 onBack={() => go("dashboard")} />}
+          {screen === "contracts" && <ContractsScreen onBack={() => go("dashboard")} />}
           {screen === "notifications" && <Notifications onBack={() => go("dashboard")} />}
           {screen === "settings" && (
             <SettingsScreen onBack={() => go("dashboard")} onWallet={() => go("wallet")} />
@@ -2471,6 +3030,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<AppNotification[]>(
     isSupabaseConfigured ? [] : persisted.notifications ?? seedNotifications
   );
+  const [contracts, setContracts] = useState<Contract[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const cloud = isSupabaseConfigured && !!userId;
 
@@ -2488,10 +3048,11 @@ export default function App() {
       });
       setAuthed(true);
       try {
-        const ws = await dbsvc.loadWorkspace(u.id);
+        const [ws, cts] = await Promise.all([dbsvc.loadWorkspace(u.id), dbsvc.loadContracts(u.id)]);
         setDebts(ws.debts);
         setCards(ws.cards);
         setNotifications(ws.notifications);
+        setContracts(cts);
       } catch (e) {
         toast({ title: "No se pudo cargar tus datos", desc: String((e as Error).message), variant: "warn" });
       }
@@ -2508,6 +3069,7 @@ export default function App() {
         setDebts([]);
         setCards([]);
         setNotifications([]);
+        setContracts([]);
       }
     });
     return () => sub.subscription.unsubscribe();
@@ -2618,6 +3180,78 @@ export default function App() {
     if (cloud && userId) dbsvc.removeCardDb(userId, cardId, newPrimary).catch(persistErr);
   };
 
+  const createContract: Store["createContract"] = (c) => {
+    setContracts((p) => [c, ...p]);
+    if (cloud && userId) dbsvc.createContractDb(userId, c).catch(persistErr);
+  };
+
+  const buildDebtFromContract = (c: Contract): Debt => ({
+    id: newId(),
+    category: c.template === "vehicle_sale" ? "vehicle" : "loan",
+    debtorName: c.clientName,
+    debtorPhone: c.clientPhone,
+    debtorEmail: c.clientEmail,
+    creditorName: "Administrador",
+    description: c.title,
+    principal: c.totalAmount,
+    downPayment: c.downPayment,
+    installments: c.installments,
+    frequency: c.frequency,
+    startDate: c.startDate || new Date().toISOString(),
+    notes: c.terms,
+    inviteCode: inviteCode(),
+    inviteAccepted: true,
+    lateInterestEnabled: false,
+    dailyLateFee: c.dailyLateFee,
+    nextDueDate: daysFromNow(c.frequency === "weekly" ? 7 : c.frequency === "biweekly" ? 15 : 30),
+    charges: 0,
+    interest: 0,
+    totalPaid: 0,
+    transactions: [],
+    avatarColor: "from-violet-500 to-fuchsia-600",
+  });
+
+  const signContract: Store["signContract"] = (contractId, who, signature) => {
+    const c = contracts.find((x) => x.id === contractId);
+    if (!c) return;
+    const now = new Date().toISOString();
+    const adminSig = who === "admin" ? signature : c.adminSignature;
+    const clientSig = who === "client" ? signature : c.clientSignature;
+    const both = !!adminSig && !!clientSig;
+    let debt: Debt | undefined;
+    const updated: Contract = {
+      ...c,
+      adminSignature: adminSig,
+      clientSignature: clientSig,
+      adminSignedAt: who === "admin" ? now : c.adminSignedAt,
+      clientSignedAt: who === "client" ? now : c.clientSignedAt,
+      status: both ? "completed" : "pending_signature",
+    };
+    if (both && !c.debtId) {
+      debt = buildDebtFromContract(c);
+      updated.debtId = debt.id;
+    }
+    setContracts((prev) => prev.map((x) => (x.id === contractId ? updated : x)));
+    if (debt) {
+      const newDebt = debt;
+      setDebts((p) => [newDebt, ...p]);
+      pushNotification({ type: "invite", title: "Contrato firmado", body: `${c.clientName} · deuda creada automáticamente` });
+      if (cloud && userId) dbsvc.createDebtDb(userId, newDebt).catch(persistErr);
+    }
+    if (cloud) {
+      const patch: Record<string, unknown> = { status: updated.status };
+      patch[who === "admin" ? "admin_signature" : "client_signature"] = signature;
+      patch[who === "admin" ? "admin_signed_at" : "client_signed_at"] = now;
+      if (debt) patch.debt_id = debt.id;
+      dbsvc.updateContractDb(contractId, patch).catch(persistErr);
+    }
+  };
+
+  const cancelContract: Store["cancelContract"] = (id) => {
+    setContracts((p) => p.map((c) => (c.id === id ? { ...c, status: "cancelled" } : c)));
+    if (cloud) dbsvc.updateContractDb(id, { status: "cancelled" }).catch(persistErr);
+  };
+
   const store: Store = {
     dark,
     toggleDark: () => setDark((d) => !d),
@@ -2658,6 +3292,10 @@ export default function App() {
         dbsvc.markNotificationsReadDb(userId).catch(() => {});
       }
     },
+    contracts,
+    createContract,
+    signContract,
+    cancelContract,
     logout: () => {
       if (isSupabaseConfigured && supabase) supabase.auth.signOut();
       setAuthed(false);

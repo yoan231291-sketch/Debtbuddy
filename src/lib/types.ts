@@ -65,3 +65,33 @@ export interface Toast {
   desc?: string;
   variant: "success" | "info" | "warn";
 }
+
+export type ContractTemplate = "vehicle_sale" | "personal_loan" | "payment_agreement" | "custom";
+export type ContractStatus = "draft" | "pending_signature" | "signed" | "completed" | "cancelled";
+
+export interface Contract {
+  id: string;
+  template: ContractTemplate;
+  title: string;
+  clientName: string;
+  clientEmail: string;
+  clientPhone: string;
+  clientAddress: string;
+  description: string;
+  terms: string;
+  totalAmount: number;
+  downPayment: number;
+  financedAmount: number;
+  installments: number;
+  frequency: Frequency;
+  startDate: string;
+  endDate: string;
+  dailyLateFee: number;
+  status: ContractStatus;
+  adminSignature?: string;
+  clientSignature?: string;
+  adminSignedAt?: string;
+  clientSignedAt?: string;
+  debtId?: string;
+  createdAt: string;
+}

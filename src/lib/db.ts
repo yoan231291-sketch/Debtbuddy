@@ -1,5 +1,13 @@
 import { supabase } from "./supabase";
-import type { Debt, Transaction, Card, AppNotification, TxType, CardBrand } from "./types";
+import type {
+  Debt,
+  Transaction,
+  Card,
+  AppNotification,
+  TxType,
+  CardBrand,
+  Contract,
+} from "./types";
 
 const PALETTE = [
   "from-indigo-500 to-violet-600",
@@ -296,4 +304,92 @@ export async function addNotificationDb(
 
 export async function markNotificationsReadDb(userId: string): Promise<void> {
   await db().from("notifications").update({ read: true }).eq("user_id", userId);
+}
+
+/* ------------------------ CONTRACTS ------------------------ */
+
+interface ClientRow {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+}
+
+export async function loadContracts(userId: string): Promise<Contract[]> {
+  const s = db();
+  const [contractsR, clientsR] = await Promise.all([
+    s.from("contracts").select("*").eq("admin_id", userId).order("created_at", { ascending: false }),
+    s.from("clients").select("id,name,email,phone,address").eq("admin_id", userId),
+  ]);
+  const clients = new Map<string, ClientRow>();
+  (clientsR.data || []).forEach((c) => clients.set(c.id, c as ClientRow));
+  return (contractsR.data || []).map((c: any) => {
+    const cl = clients.get(c.client_id);
+    return {
+      id: c.id,
+      template: c.template,
+      title: c.title || "",
+      clientName: cl?.name || "Cliente",
+      clientEmail: cl?.email || "",
+      clientPhone: cl?.phone || "",
+      clientAddress: cl?.address || "",
+      description: "",
+      terms: c.terms || "",
+      totalAmount: Number(c.total_amount),
+      downPayment: Number(c.down_payment),
+      financedAmount: Number(c.financed_amount),
+      installments: 12,
+      frequency: c.frequency || "monthly",
+      startDate: c.start_date || "",
+      endDate: c.end_date || "",
+      dailyLateFee: Number(c.daily_late_fee),
+      status: c.status,
+      adminSignature: c.admin_signature || undefined,
+      clientSignature: c.client_signature || undefined,
+      adminSignedAt: c.admin_signed_at || undefined,
+      clientSignedAt: c.client_signed_at || undefined,
+      debtId: c.debt_id || undefined,
+      createdAt: c.created_at,
+    };
+  });
+}
+
+export async function createContractDb(userId: string, c: Contract): Promise<void> {
+  const s = db();
+  const clientId = crypto.randomUUID();
+  const { error: ce } = await s.from("clients").insert({
+    id: clientId,
+    admin_id: userId,
+    name: c.clientName,
+    email: c.clientEmail,
+    phone: c.clientPhone,
+    address: c.clientAddress,
+  });
+  if (ce) throw ce;
+  const { error } = await s.from("contracts").insert({
+    id: c.id,
+    admin_id: userId,
+    client_id: clientId,
+    template: c.template,
+    title: c.title,
+    terms: c.terms,
+    total_amount: c.totalAmount,
+    down_payment: c.downPayment,
+    financed_amount: c.financedAmount,
+    start_date: c.startDate || null,
+    end_date: c.endDate || null,
+    daily_late_fee: c.dailyLateFee,
+    frequency: c.frequency,
+    status: c.status,
+  });
+  if (error) throw error;
+}
+
+export async function updateContractDb(
+  contractId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const { error } = await db().from("contracts").update(patch).eq("id", contractId);
+  if (error) throw error;
 }
