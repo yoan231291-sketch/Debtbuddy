@@ -647,6 +647,88 @@ function BrandLogo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
   );
 }
 
+/* ============================== INSTALL PROMPT ============================== */
+
+interface BIPEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: string }>;
+}
+
+function InstallPrompt() {
+  const [deferred, setDeferred] = useState<BIPEvent | null>(null);
+  const [show, setShow] = useState(false);
+  const [ios, setIos] = useState(false);
+
+  useEffect(() => {
+    const nav = window.navigator as Navigator & { standalone?: boolean };
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches || nav.standalone === true;
+    if (standalone) return;
+    if (localStorage.getItem("2payback.installDismissed")) return;
+
+    const onBIP = (e: Event) => {
+      e.preventDefault();
+      setDeferred(e as BIPEvent);
+      setShow(true);
+    };
+    const onInstalled = () => setShow(false);
+    window.addEventListener("beforeinstallprompt", onBIP);
+    window.addEventListener("appinstalled", onInstalled);
+
+    const isIos = /iphone|ipad|ipod/i.test(nav.userAgent) && !/crios|fxios/i.test(nav.userAgent);
+    if (isIos) {
+      setIos(true);
+      setShow(true);
+    }
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBIP);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
+  if (!show) return null;
+
+  const dismiss = () => {
+    setShow(false);
+    localStorage.setItem("2payback.installDismissed", "1");
+  };
+  const install = async () => {
+    if (!deferred) return;
+    await deferred.prompt();
+    await deferred.userChoice;
+    setShow(false);
+  };
+
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-[55] px-4 pb-4 pt-2 animate-slide-up">
+      <div className="mx-auto flex max-w-md items-center gap-3 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-2xl backdrop-blur dark:border-white/10 dark:bg-slate-900/95">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white">
+          <HandCoins className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-slate-900 dark:text-white">Instala 2PayBack</p>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            {ios
+              ? "Toca Compartir ⬆️ y luego 'Añadir a inicio'."
+              : "Añádela a tu pantalla de inicio para acceso rápido."}
+          </p>
+        </div>
+        {!ios && (
+          <Button size="sm" onClick={install}>
+            <Download className="h-4 w-4" /> Instalar
+          </Button>
+        )}
+        <button
+          onClick={dismiss}
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ============================== TOASTS ============================== */
 
 function ToastHost() {
@@ -2592,6 +2674,7 @@ export default function App() {
   return (
     <StoreCtx.Provider value={store}>
       <ToastHost />
+      <InstallPrompt />
       {authed ? (
         <AppShell />
       ) : (
