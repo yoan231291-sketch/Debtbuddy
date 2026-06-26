@@ -50,6 +50,7 @@ import {
   Fingerprint,
   type LucideIcon,
 } from "lucide-react";
+import { supabase, isSupabaseConfigured } from "./lib/supabase";
 
 /* ============================== TYPES ============================== */
 
@@ -689,18 +690,75 @@ function ToastHost() {
 /* ============================== AUTH ============================== */
 
 function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
-  const { dark, toggleDark } = useStore();
+  const { dark, toggleDark, toast } = useStore();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [showPw, setShowPw] = useState(false);
-  const [email, setEmail] = useState("yoan231291@gmail.com");
+  const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [remember, setRemember] = useState(true);
   const [forgot, setForgot] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onAuth(email || "demo@2payback.app");
+    if (!isSupabaseConfigured || !supabase) {
+      onAuth(email || "demo@2payback.app");
+      return;
+    }
+    if (mode === "register" && pw !== pw2) {
+      toast({ title: "Las contraseñas no coinciden", variant: "warn" });
+      return;
+    }
+    setBusy(true);
+    try {
+      if (mode === "login") {
+        const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase.auth.signUp({ email, password: pw });
+        if (error) throw error;
+        if (!data.session) {
+          toast({
+            title: "Revisa tu correo",
+            desc: "Te enviamos un enlace para confirmar tu cuenta.",
+            variant: "info",
+          });
+        }
+      }
+    } catch (err) {
+      toast({ title: "No se pudo continuar", desc: (err as Error).message, variant: "warn" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const oauth = async (provider: "google" | "apple") => {
+    if (!isSupabaseConfigured || !supabase) {
+      onAuth(provider + ".user@2payback.app");
+      return;
+    }
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) toast({ title: "No se pudo conectar", desc: error.message, variant: "warn" });
+  };
+
+  const resetPassword = async (target: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      setForgot(false);
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(target, {
+      redirectTo: window.location.origin,
+    });
+    toast(
+      error
+        ? { title: "Error", desc: error.message, variant: "warn" }
+        : { title: "Enlace enviado", desc: "Revisa tu correo.", variant: "success" }
+    );
+    setForgot(false);
   };
 
   return (
@@ -813,9 +871,18 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
               </button>
             </div>
 
-            <Button type="submit" full size="lg" className="mt-1">
-              {mode === "login" ? "Iniciar sesión" : "Crear cuenta"}
-              <ChevronRight className="h-4 w-4" />
+            <Button type="submit" full size="lg" className="mt-1" disabled={busy}>
+              {busy ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  Procesando...
+                </>
+              ) : (
+                <>
+                  {mode === "login" ? "Iniciar sesión" : "Crear cuenta"}
+                  <ChevronRight className="h-4 w-4" />
+                </>
+              )}
             </Button>
           </form>
 
@@ -827,13 +894,13 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
 
           <div className="grid grid-cols-2 gap-3">
             <button
-              onClick={() => onAuth("google.user@gmail.com")}
+              onClick={() => oauth("google")}
               className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[.97] dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-200"
             >
               <GoogleIcon /> Google
             </button>
             <button
-              onClick={() => onAuth("apple.user@icloud.com")}
+              onClick={() => oauth("apple")}
               className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[.97] dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-200"
             >
               <AppleIcon /> Apple
@@ -851,14 +918,14 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
           Ingresa tu email y te enviaremos un enlace para restablecer tu contraseña.
         </p>
         <Field label="Email" icon={Mail}>
-          <Input type="email" defaultValue={email} placeholder="tu@email.com" />
+          <Input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="tu@email.com"
+          />
         </Field>
-        <Button
-          full
-          size="lg"
-          className="mt-4"
-          onClick={() => setForgot(false)}
-        >
+        <Button full size="lg" className="mt-4" onClick={() => resetPassword(email)}>
           <Send className="h-4 w-4" /> Enviar enlace
         </Button>
       </Modal>
@@ -2381,6 +2448,27 @@ export default function App() {
   }, [dark]);
 
   useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        const u = data.session.user;
+        setUser({ email: u.email ?? "", name: (u.user_metadata?.full_name as string) ?? u.email ?? "Usuario" });
+        setAuthed(true);
+      }
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        const u = session.user;
+        setUser({ email: u.email ?? "", name: (u.user_metadata?.full_name as string) ?? u.email ?? "Usuario" });
+        setAuthed(true);
+      } else {
+        setAuthed(false);
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ dark, debts, cards, notifications }));
     } catch {
@@ -2495,6 +2583,7 @@ export default function App() {
       setNotifications([]);
     },
     logout: () => {
+      if (isSupabaseConfigured && supabase) supabase.auth.signOut();
       setAuthed(false);
       toast({ title: "Sesión cerrada", variant: "info" });
     },
