@@ -51,81 +51,28 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
+import * as dbsvc from "./lib/db";
+import type {
+  Role,
+  Frequency,
+  TxType,
+  CardBrand,
+  Transaction,
+  Card,
+  Debt,
+  AppNotification,
+  Toast,
+} from "./lib/types";
 
 /* ============================== TYPES ============================== */
-
-type Role = "admin" | "client";
-type Frequency = "weekly" | "biweekly" | "monthly";
-type TxType = "payment" | "extra" | "charge" | "interest";
-type CardBrand = "Visa" | "Mastercard" | "Amex";
-
-interface Transaction {
-  id: string;
-  type: TxType;
-  concept: string;
-  amount: number;
-  date: string;
-  method?: string;
-  balanceBefore: number;
-  balanceAfter: number;
-}
-
-interface Card {
-  id: string;
-  brand: CardBrand;
-  last4: string;
-  exp: string;
-  holder: string;
-  slot: "primary" | "secondary";
-  color: string;
-}
-
-interface Debt {
-  id: string;
-  category: "loan" | "vehicle";
-  debtorName: string;
-  debtorPhone: string;
-  debtorEmail: string;
-  creditorName: string;
-  description: string;
-  principal: number;
-  downPayment: number;
-  installments: number;
-  frequency: Frequency;
-  startDate: string;
-  notes: string;
-  inviteCode: string;
-  inviteAccepted: boolean;
-  lateInterestEnabled: boolean;
-  dailyLateFee: number;
-  nextDueDate: string;
-  charges: number;
-  interest: number;
-  totalPaid: number;
-  transactions: Transaction[];
-  avatarColor: string;
-}
-
-interface AppNotification {
-  id: string;
-  type: TxType | "invite";
-  title: string;
-  body: string;
-  date: string;
-  read: boolean;
-}
-
-interface Toast {
-  id: string;
-  title: string;
-  desc?: string;
-  variant: "success" | "info" | "warn";
-}
 
 /* ============================== HELPERS ============================== */
 
 const uid = (p = "") =>
   p + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
+
+const newId = (): string =>
+  typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : uid();
 
 const inviteCode = () =>
   Array.from({ length: 9 }, () =>
@@ -1278,7 +1225,7 @@ function CreateDebt({ onBack, onCreated }: { onBack: () => void; onCreated: (d: 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const d: Debt = {
-      id: uid("d_"),
+      id: newId(),
       category: /auto|carro|veh|honda|nissan|toyota|moto/i.test(f.description) ? "vehicle" : "loan",
       debtorName: f.debtorName || "Nuevo deudor",
       debtorPhone: f.debtorPhone,
@@ -2516,14 +2463,16 @@ const persisted: {
 export default function App() {
   const [dark, setDark] = useState(persisted.dark ?? true);
   const [authed, setAuthed] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
   const [role, setRole] = useState<Role>("admin");
-  const [user, setUser] = useState({ email: "yoan231291@gmail.com", name: CREDITOR_NAME });
-  const [debts, setDebts] = useState<Debt[]>(persisted.debts ?? seedDebts());
-  const [cards, setCards] = useState<Card[]>(persisted.cards ?? []);
+  const [user, setUser] = useState({ email: "", name: "Administrador" });
+  const [debts, setDebts] = useState<Debt[]>(isSupabaseConfigured ? [] : persisted.debts ?? seedDebts());
+  const [cards, setCards] = useState<Card[]>(isSupabaseConfigured ? [] : persisted.cards ?? []);
   const [notifications, setNotifications] = useState<AppNotification[]>(
-    persisted.notifications ?? seedNotifications
+    isSupabaseConfigured ? [] : persisted.notifications ?? seedNotifications
   );
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const cloud = isSupabaseConfigured && !!userId;
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -2531,28 +2480,46 @@ export default function App() {
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) {
-        const u = data.session.user;
-        setUser({ email: u.email ?? "", name: (u.user_metadata?.full_name as string) ?? u.email ?? "Usuario" });
-        setAuthed(true);
+    const enter = async (u: { id: string; email?: string; user_metadata?: Record<string, unknown> }) => {
+      setUserId(u.id);
+      setUser({
+        email: u.email ?? "",
+        name: (u.user_metadata?.full_name as string) ?? (u.user_metadata?.name as string) ?? u.email ?? "Administrador",
+      });
+      setAuthed(true);
+      try {
+        const ws = await dbsvc.loadWorkspace(u.id);
+        setDebts(ws.debts);
+        setCards(ws.cards);
+        setNotifications(ws.notifications);
+      } catch (e) {
+        toast({ title: "No se pudo cargar tus datos", desc: String((e as Error).message), variant: "warn" });
       }
+    };
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) enter(data.session.user);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
-        const u = session.user;
-        setUser({ email: u.email ?? "", name: (u.user_metadata?.full_name as string) ?? u.email ?? "Usuario" });
-        setAuthed(true);
+        enter(session.user);
       } else {
+        setUserId(null);
         setAuthed(false);
+        setDebts([]);
+        setCards([]);
+        setNotifications([]);
       }
     });
     return () => sub.subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ dark, debts, cards, notifications }));
+      const payload = isSupabaseConfigured
+        ? { dark }
+        : { dark, debts, cards, notifications };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       /* ignore quota errors */
     }
@@ -2564,40 +2531,43 @@ export default function App() {
     setTimeout(() => setToasts((p) => p.filter((x) => x.id !== id)), 3600);
   };
 
-  const pushNotification: Store["pushNotification"] = (n) =>
-    setNotifications((p) => [
-      { ...n, id: uid(), date: new Date().toISOString(), read: false },
-      ...p,
-    ]);
+  const persistErr = (e: unknown) =>
+    toast({ title: "No se pudo sincronizar", desc: String((e as Error).message), variant: "warn" });
+
+  const pushNotification: Store["pushNotification"] = (n) => {
+    const id = newId();
+    setNotifications((p) => [{ ...n, id, date: new Date().toISOString(), read: false }, ...p]);
+    if (cloud && userId) dbsvc.addNotificationDb(userId, id, n).catch(() => {});
+  };
 
   const applyPayment: Store["applyPayment"] = (debtId, type, amount, concept, method) => {
-    let result!: Transaction;
+    const current = debts.find((d) => d.id === debtId);
+    const before = current ? balance(current) : 0;
+    const txId = newId();
+    const next: Debt | undefined = current && {
+      ...current,
+      charges: type === "charge" ? current.charges + amount : current.charges,
+      interest: type === "interest" ? current.interest + amount : current.interest,
+      totalPaid: type === "payment" || type === "extra" ? current.totalPaid + amount : current.totalPaid,
+    };
+    const after = next ? balance(next) : 0;
+    const result: Transaction = {
+      id: txId,
+      type,
+      concept,
+      amount,
+      date: new Date().toISOString(),
+      method,
+      balanceBefore: before,
+      balanceAfter: after,
+    };
     setDebts((prev) =>
-      prev.map((d) => {
-        if (d.id !== debtId) return d;
-        const before = balance(d);
-        const isCharge = type === "charge";
-        const next: Debt = {
-          ...d,
-          charges: isCharge ? d.charges + amount : d.charges,
-          interest: type === "interest" ? d.interest + amount : d.interest,
-          totalPaid: type === "payment" || type === "extra" ? d.totalPaid + amount : d.totalPaid,
-        };
-        const after = balance(next);
-        const t: Transaction = {
-          id: uid("tx_"),
-          type,
-          concept,
-          amount,
-          date: new Date().toISOString(),
-          method,
-          balanceBefore: before,
-          balanceAfter: after,
-        };
-        result = t;
-        return { ...next, transactions: [...d.transactions, t] };
-      })
+      prev.map((d) =>
+        d.id === debtId && next ? { ...next, transactions: [...d.transactions, result] } : d
+      )
     );
+    if (cloud && userId && current)
+      dbsvc.addMovementDb(userId, current, type, amount, concept, method, txId).catch(persistErr);
     const labels: Record<TxType, { title: string; variant: Toast["variant"]; notif: string }> = {
       payment: { title: "Pago procesado", variant: "success", notif: "Pago recibido" },
       extra: { title: "Abono libre registrado", variant: "success", notif: "Pago recibido" },
@@ -2610,8 +2580,10 @@ export default function App() {
     return result;
   };
 
-  const setLateInterest: Store["setLateInterest"] = (debtId, on) =>
+  const setLateInterest: Store["setLateInterest"] = (debtId, on) => {
     setDebts((prev) => prev.map((d) => (d.id === debtId ? { ...d, lateInterestEnabled: on } : d)));
+    if (cloud) dbsvc.setLateInterestDb(debtId, on).catch(persistErr);
+  };
 
   const applyAccruedInterest: Store["applyAccruedInterest"] = (debtId) => {
     const d = debts.find((x) => x.id === debtId);
@@ -2621,22 +2593,30 @@ export default function App() {
     applyPayment(debtId, "interest", od * d.dailyLateFee, `Penalización por atraso (${od} días)`);
   };
 
-  const setPrimaryCard: Store["setPrimaryCard"] = (cardId) =>
-    setCards((prev) =>
-      prev.map((c) => ({ ...c, slot: c.id === cardId ? "primary" : "secondary" }))
-    );
-
-  const addCard: Store["addCard"] = (c) => {
-    if (c.slot === "primary") setCards((p) => p.map((x) => ({ ...x, slot: "secondary" })));
-    setCards((p) => [...p, { ...c, id: uid("c_") }]);
+  const setPrimaryCard: Store["setPrimaryCard"] = (cardId) => {
+    setCards((prev) => prev.map((c) => ({ ...c, slot: c.id === cardId ? "primary" : "secondary" })));
+    if (cloud && userId) dbsvc.setPrimaryCardDb(userId, cardId).catch(persistErr);
   };
 
-  const removeCard: Store["removeCard"] = (cardId) =>
+  const addCard: Store["addCard"] = (c) => {
+    const id = newId();
+    if (c.slot === "primary") setCards((p) => p.map((x) => ({ ...x, slot: "secondary" })));
+    setCards((p) => [...p, { ...c, id }]);
+    if (cloud && userId) dbsvc.addCardDb(userId, id, c).catch(persistErr);
+  };
+
+  const removeCard: Store["removeCard"] = (cardId) => {
+    let newPrimary: string | undefined;
     setCards((prev) => {
       const left = prev.filter((c) => c.id !== cardId);
-      if (left.length && !left.some((c) => c.slot === "primary")) left[0].slot = "primary";
+      if (left.length && !left.some((c) => c.slot === "primary")) {
+        left[0] = { ...left[0], slot: "primary" };
+        newPrimary = left[0].id;
+      }
       return [...left];
     });
+    if (cloud && userId) dbsvc.removeCardDb(userId, cardId, newPrimary).catch(persistErr);
+  };
 
   const store: Store = {
     dark,
@@ -2650,19 +2630,33 @@ export default function App() {
     toasts,
     toast,
     dismissToast: (id) => setToasts((p) => p.filter((x) => x.id !== id)),
-    addDebt: (d) => setDebts((p) => [d, ...p]),
+    addDebt: (d) => {
+      setDebts((p) => [d, ...p]);
+      if (cloud && userId) dbsvc.createDebtDb(userId, d).catch(persistErr);
+    },
     applyPayment,
     setLateInterest,
     applyAccruedInterest,
     setPrimaryCard,
     addCard,
     removeCard,
-    readAllNotifications: () => setNotifications((p) => p.map((n) => ({ ...n, read: true }))),
+    readAllNotifications: () => {
+      setNotifications((p) => p.map((n) => ({ ...n, read: true })));
+      if (cloud && userId) dbsvc.markNotificationsReadDb(userId).catch(() => {});
+    },
     pushNotification,
-    removeDebt: (id) => setDebts((p) => p.filter((d) => d.id !== id)),
+    removeDebt: (id) => {
+      setDebts((p) => p.filter((d) => d.id !== id));
+      if (cloud) dbsvc.removeDebtDb(id).catch(persistErr);
+    },
     resetData: () => {
+      const ids = debts.map((d) => d.id);
       setDebts([]);
       setNotifications([]);
+      if (cloud && userId) {
+        ids.forEach((id) => dbsvc.removeDebtDb(id).catch(() => {}));
+        dbsvc.markNotificationsReadDb(userId).catch(() => {});
+      }
     },
     logout: () => {
       if (isSupabaseConfigured && supabase) supabase.auth.signOut();
