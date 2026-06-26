@@ -1782,6 +1782,21 @@ function ReceiptModal({
   const { toast } = useStore();
   if (!receipt) return null;
   const m = txMeta[receipt.type];
+  const pdfData = {
+    brand: "2PayBack",
+    txId: receipt.id.toUpperCase(),
+    date: fmtDate(receipt.date),
+    time: fmtTime(receipt.date),
+    client: debt.debtorName,
+    admin: debt.creditorName,
+    concept: receipt.concept,
+    typeLabel: m.label,
+    method: receipt.method || "—",
+    amount: money(receipt.amount),
+    balanceBefore: money(receipt.balanceBefore),
+    balanceAfter: money(receipt.balanceAfter),
+    status: "Completado",
+  };
   return (
     <Modal open={!!receipt} onClose={onClose}>
       <div className="overflow-hidden rounded-3xl border border-slate-200 dark:border-white/10">
@@ -1817,13 +1832,25 @@ function ReceiptModal({
         <div className="grid grid-cols-2 gap-3 bg-white p-5 pt-0 dark:bg-slate-900">
           <Button
             variant="outline"
-            onClick={() => toast({ title: "PDF descargado", desc: "Recibo guardado en tu dispositivo.", variant: "success" })}
+            onClick={async () => {
+              const { downloadReceiptPdf } = await import("./lib/pdf");
+              downloadReceiptPdf(pdfData);
+              toast({ title: "PDF descargado", desc: "Recibo guardado en tu dispositivo.", variant: "success" });
+            }}
           >
             <Download className="h-4 w-4" /> Descargar PDF
           </Button>
           <Button
             variant="outline"
-            onClick={() => toast({ title: "Recibo compartido", desc: "Listo para enviar por WhatsApp.", variant: "info" })}
+            onClick={async () => {
+              const { shareReceiptPdf } = await import("./lib/pdf");
+              const shared = await shareReceiptPdf(pdfData);
+              toast({
+                title: shared ? "Recibo compartido" : "PDF descargado",
+                desc: shared ? "Enviado correctamente." : "Tu dispositivo no soporta compartir; se descargó.",
+                variant: "success",
+              });
+            }}
           >
             <Share2 className="h-4 w-4" /> Compartir PDF
           </Button>
