@@ -53,7 +53,7 @@ import {
 
 /* ============================== TYPES ============================== */
 
-type Role = "creditor" | "debtor";
+type Role = "admin" | "client";
 type Frequency = "weekly" | "biweekly" | "monthly";
 type TxType = "payment" | "extra" | "charge" | "interest";
 type CardBrand = "Visa" | "Mastercard" | "Amex";
@@ -335,27 +335,6 @@ function tx(
 ): Transaction {
   return { id: uid("tx_"), type, concept, amount, date, method, balanceBefore, balanceAfter };
 }
-
-const seedCards: Card[] = [
-  {
-    id: "c1",
-    brand: "Visa",
-    last4: "4242",
-    exp: "08/27",
-    holder: CREDITOR_NAME,
-    slot: "primary",
-    color: "from-indigo-600 via-violet-600 to-fuchsia-600",
-  },
-  {
-    id: "c2",
-    brand: "Mastercard",
-    last4: "8210",
-    exp: "11/26",
-    holder: CREDITOR_NAME,
-    slot: "secondary",
-    color: "from-slate-800 via-slate-700 to-zinc-900",
-  },
-];
 
 const seedNotifications: AppNotification[] = [
   {
@@ -661,7 +640,7 @@ function BrandLogo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
         <HandCoins className={size === "lg" ? "h-7 w-7" : "h-5 w-5"} />
       </div>
       <span className={cx("font-extrabold tracking-tight text-slate-900 dark:text-white", t)}>
-        Debt<span className="text-indigo-600 dark:text-indigo-400">Buddy</span>
+        2Pay<span className="text-indigo-600 dark:text-indigo-400">Back</span>
       </span>
     </div>
   );
@@ -721,7 +700,7 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    onAuth(email || "demo@debtbuddy.app");
+    onAuth(email || "demo@2payback.app");
   };
 
   return (
@@ -863,7 +842,7 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
         </Card3>
 
         <p className="mt-6 text-center text-xs text-slate-400">
-          Al continuar aceptas los Términos y la Política de privacidad de DebtBuddy.
+          Al continuar aceptas los Términos y la Política de privacidad de 2PayBack.
         </p>
       </div>
 
@@ -925,26 +904,26 @@ function RoleSwitch() {
   return (
     <div className="grid grid-cols-2 gap-1 rounded-2xl bg-slate-100 p-1 dark:bg-slate-800/60">
       <button
-        onClick={() => setRole("creditor")}
+        onClick={() => setRole("admin")}
         className={cx(
           "flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold transition",
-          role === "creditor"
+          role === "admin"
             ? "bg-white text-slate-900 shadow dark:bg-slate-900 dark:text-white"
             : "text-slate-500 dark:text-slate-400"
         )}
       >
-        <ArrowDownLeft className="h-4 w-4" /> Acreedor
+        <ArrowDownLeft className="h-4 w-4" /> Administrador
       </button>
       <button
-        onClick={() => setRole("debtor")}
+        onClick={() => setRole("client")}
         className={cx(
           "flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold transition",
-          role === "debtor"
+          role === "client"
             ? "bg-white text-slate-900 shadow dark:bg-slate-900 dark:text-white"
             : "text-slate-500 dark:text-slate-400"
         )}
       >
-        <ArrowUpRight className="h-4 w-4" /> Deudor
+        <ArrowUpRight className="h-4 w-4" /> Cliente
       </button>
     </div>
   );
@@ -978,7 +957,7 @@ function StatCard({
 
 function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreate: () => void }) {
   const { role, debts } = useStore();
-  const isCreditor = role === "creditor";
+  const isAdmin = role === "admin";
 
   const totalOutstanding = debts.reduce((s, d) => s + balance(d), 0);
   const totalCollected = debts.reduce((s, d) => s + d.totalPaid, 0);
@@ -988,7 +967,7 @@ function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreat
     <div className="space-y-5">
       <div>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          {isCreditor ? "Total por cobrar" : "Total que debes"}
+          {isAdmin ? "Total por cobrar" : "Total que debes"}
         </p>
         <h1 className="mt-0.5 text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white">
           {money(totalOutstanding)}
@@ -1008,7 +987,7 @@ function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreat
 
       <div className="grid grid-cols-2 gap-3">
         <StatCard
-          label={isCreditor ? "Por cobrar" : "Por pagar"}
+          label={isAdmin ? "Por cobrar" : "Por pagar"}
           value={money(totalOutstanding)}
           icon={CircleDollarSign}
           tone="bg-indigo-500/10 text-indigo-500"
@@ -1023,9 +1002,9 @@ function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreat
 
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold text-slate-900 dark:text-white">
-          {isCreditor ? "Me deben" : "Debo"}
+          {isAdmin ? "Me deben" : "Debo"}
         </h2>
-        {isCreditor && (
+        {isAdmin && (
           <button
             onClick={onCreate}
             className="flex items-center gap-1 text-sm font-semibold text-indigo-600 dark:text-indigo-400"
@@ -1047,7 +1026,7 @@ function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreat
                 Crea tu primera deuda para empezar a gestionar pagos.
               </p>
             </div>
-            {isCreditor && (
+            {isAdmin && (
               <Button onClick={onCreate}>
                 <Plus className="h-4 w-4" /> Crear deuda
               </Button>
@@ -1064,7 +1043,7 @@ function Dashboard({ onOpen, onCreate }: { onOpen: (id: string) => void; onCreat
 }
 
 function DebtRow({ debt, role, onClick }: { debt: Debt; role: Role; onClick: () => void }) {
-  const isCreditor = role === "creditor";
+  const isAdmin = role === "admin";
   const od = daysOverdue(debt.nextDueDate);
   const pct = progress(debt);
   return (
@@ -1103,7 +1082,7 @@ function DebtRow({ debt, role, onClick }: { debt: Debt; role: Role; onClick: () 
         <ProgressBar value={pct} />
       </div>
 
-      {!isCreditor && (
+      {!isAdmin && (
         <div className="mt-3.5 flex items-center justify-between">
           <div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">Cuota siguiente</p>
@@ -1182,14 +1161,14 @@ function CreateDebt({ onBack, onCreated }: { onBack: () => void; onCreated: (d: 
       title: "Deuda creada",
       body: `Se generó una invitación para ${d.debtorName}`,
     });
-    toast({ title: "Deuda creada", desc: "Comparte la invitación con el deudor.", variant: "success" });
+    toast({ title: "Deuda creada", desc: "Comparte la invitación con el cliente.", variant: "success" });
     setCreated(d);
   };
 
   if (created) {
-    const link = `https://debtbuddy.app/invite/${created.inviteCode}`;
+    const link = `https://2payback.app/invite/${created.inviteCode}`;
     const wa = `https://wa.me/?text=${encodeURIComponent(
-      `Hola ${created.debtorName} 👋 Te he enviado una solicitud de deuda en DebtBuddy. Ingresa aquí para verla: ${link}`
+      `Hola ${created.debtorName} 👋 Te he enviado una solicitud de deuda en 2PayBack. Ingresa aquí para verla: ${link}`
     )}`;
     return (
       <div className="space-y-5">
@@ -1237,8 +1216,8 @@ function CreateDebt({ onBack, onCreated }: { onBack: () => void; onCreated: (d: 
       <ScreenHeader title="Crear deuda" onBack={onBack} />
       <form onSubmit={submit} className="space-y-4">
         <Card3 className="space-y-3.5 p-4">
-          <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Deudor</p>
-          <Field label="Nombre del deudor" icon={User}>
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Cliente</p>
+          <Field label="Nombre del cliente" icon={User}>
             <Input value={f.debtorName} onChange={(e) => set("debtorName", e.target.value)} placeholder="Ej. Carlos Méndez" required />
           </Field>
           <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
@@ -1385,7 +1364,7 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   if (!debt) return null;
-  const isCreditor = role === "creditor";
+  const isAdmin = role === "admin";
   const pct = progress(debt);
   const od = daysOverdue(debt.nextDueDate);
   const lp = lastPayment(debt);
@@ -1466,10 +1445,10 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
         </Button>
       </div>
 
-      {isCreditor && (
+      {isAdmin && (
         <Card3 className="space-y-4 p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
-            Herramientas del acreedor
+            Herramientas del administrador
           </p>
           <Button full variant="outline" onClick={() => setPayModal("charge")}>
             <Plus className="h-4 w-4" /> Agregar Cargo Extra
@@ -1718,6 +1697,11 @@ function PaymentModal({
               <CreditCard className="h-3.5 w-3.5" /> Tarjeta a utilizar
             </p>
             <div className="space-y-2">
+              {cards.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-slate-300 p-3 text-center text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
+                  No payment methods added yet. Agrega una tarjeta en "Mi billetera".
+                </div>
+              )}
               {cards.map((c) => (
                 <button
                   key={c.id}
@@ -1815,8 +1799,8 @@ function ReceiptModal({
           <ReceiptRow label="ID Transacción" value={receipt.id.toUpperCase()} mono />
           <ReceiptRow label="Fecha" value={fmtDate(receipt.date)} />
           <ReceiptRow label="Hora" value={fmtTime(receipt.date)} />
-          <ReceiptRow label="Deudor" value={debt.debtorName} />
-          <ReceiptRow label="Acreedor" value={debt.creditorName} />
+          <ReceiptRow label="Cliente" value={debt.debtorName} />
+          <ReceiptRow label="Administrador" value={debt.creditorName} />
           <ReceiptRow label="Concepto" value={receipt.concept} />
           <ReceiptRow label="Tipo" value={m.label} />
           <ReceiptRow label="Método de pago" value={receipt.method || "—"} />
@@ -1928,6 +1912,22 @@ function Wallet2({ onBack }: { onBack: () => void }) {
       </p>
 
       <div className="space-y-4">
+        {cards.length === 0 && (
+          <Card3 className="flex flex-col items-center gap-3 p-8 text-center">
+            <div className="grid h-14 w-14 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-500">
+              <CreditCard className="h-7 w-7" />
+            </div>
+            <div>
+              <p className="font-bold text-slate-900 dark:text-white">No payment methods added yet.</p>
+              <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+                Agrega una tarjeta para empezar a registrar pagos.
+              </p>
+            </div>
+            <Button onClick={() => setAdding(true)}>
+              <Plus className="h-4 w-4" /> Add Payment Method
+            </Button>
+          </Card3>
+        )}
         {cards.map((c) => (
           <div key={c.id} className="animate-fade-in">
             <div
@@ -2174,7 +2174,7 @@ function SettingsScreen({ onBack, onWallet }: { onBack: () => void; onWallet: ()
       <Button full variant="danger" onClick={logout}>
         <LogOut className="h-4 w-4" /> Cerrar sesión
       </Button>
-      <p className="pb-2 text-center text-xs text-slate-400">DebtBuddy v1.0 · Hecho con 💜</p>
+      <p className="pb-2 text-center text-xs text-slate-400">2PayBack v1.0 · Hecho con 💜</p>
 
       <Modal open={confirmReset} onClose={() => setConfirmReset(false)} title="Borrar datos de ejemplo">
         <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -2323,7 +2323,7 @@ function AppShell() {
 
 /* ============================== ROOT ============================== */
 
-const STORAGE_KEY = "debtbuddy.state.v1";
+const STORAGE_KEY = "2payback.state.v1";
 const persisted: {
   dark?: boolean;
   debts?: Debt[];
@@ -2340,10 +2340,10 @@ const persisted: {
 export default function App() {
   const [dark, setDark] = useState(persisted.dark ?? true);
   const [authed, setAuthed] = useState(false);
-  const [role, setRole] = useState<Role>("creditor");
+  const [role, setRole] = useState<Role>("admin");
   const [user, setUser] = useState({ email: "yoan231291@gmail.com", name: CREDITOR_NAME });
   const [debts, setDebts] = useState<Debt[]>(persisted.debts ?? seedDebts());
-  const [cards, setCards] = useState<Card[]>(persisted.cards ?? seedCards);
+  const [cards, setCards] = useState<Card[]>(persisted.cards ?? []);
   const [notifications, setNotifications] = useState<AppNotification[]>(
     persisted.notifications ?? seedNotifications
   );
@@ -2483,7 +2483,7 @@ export default function App() {
           onAuth={(email) => {
             setUser((u) => ({ ...u, email }));
             setAuthed(true);
-            toast({ title: "¡Bienvenido a DebtBuddy!", variant: "success" });
+            toast({ title: "¡Bienvenido a 2PayBack!", variant: "success" });
           }}
         />
       )}
