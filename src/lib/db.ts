@@ -197,6 +197,17 @@ export async function removeDebtDb(debtId: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function updateDebtFieldsDb(debtId: string, patch: Partial<Debt>): Promise<void> {
+  const map: Record<string, unknown> = {};
+  if (patch.description !== undefined) map.description = patch.description;
+  if (patch.nextDueDate !== undefined) map.next_due_date = patch.nextDueDate.slice(0, 10);
+  if (patch.dailyLateFee !== undefined) map.daily_late_fee = patch.dailyLateFee;
+  if (patch.notes !== undefined) map.notes = patch.notes;
+  if (Object.keys(map).length === 0) return;
+  const { error } = await db().from("debts").update(map).eq("id", debtId);
+  if (error) throw error;
+}
+
 export async function setLateInterestDb(debtId: string, on: boolean): Promise<void> {
   const { error } = await db().from("debts").update({ late_interest_enabled: on }).eq("id", debtId);
   if (error) throw error;
@@ -257,6 +268,21 @@ export async function addMovementDb(
   };
 }
 
+export async function deleteMovementDb(
+  type: TxType,
+  txId: string,
+  debtId: string,
+  totals: { charges: number; interest: number; paid: number }
+): Promise<void> {
+  const s = db();
+  const table = type === "charge" ? "extra_charges" : type === "interest" ? "late_fees" : "payments";
+  await s.from(table).delete().eq("id", txId);
+  await s
+    .from("debts")
+    .update({ charges_total: totals.charges, interest_total: totals.interest, total_paid: totals.paid })
+    .eq("id", debtId);
+}
+
 /* ------------------------ CARDS ------------------------ */
 
 export async function addCardDb(userId: string, cardId: string, c: Omit<Card, "id">): Promise<void> {
@@ -281,6 +307,15 @@ export async function removeCardDb(userId: string, cardId: string, makePrimaryId
   const s = db();
   await s.from("payment_methods").delete().eq("id", cardId);
   if (makePrimaryId) await s.from("payment_methods").update({ slot: "primary" }).eq("id", makePrimaryId);
+}
+
+export async function updateCardDb(cardId: string, patch: { exp?: string }): Promise<void> {
+  if (!patch.exp) return;
+  const [mm, yy] = patch.exp.split("/");
+  await db()
+    .from("payment_methods")
+    .update({ exp_month: Number(mm) || 12, exp_year: 2000 + (Number(yy) || 28) })
+    .eq("id", cardId);
 }
 
 export async function setPrimaryCardDb(userId: string, cardId: string): Promise<void> {

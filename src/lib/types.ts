@@ -1,7 +1,26 @@
 export type Role = "admin" | "client";
 export type Frequency = "weekly" | "biweekly" | "monthly";
 export type TxType = "payment" | "extra" | "charge" | "interest";
-export type CardBrand = "Visa" | "Mastercard" | "Amex";
+export type CardBrand = "Visa" | "Mastercard" | "Amex" | "Discover" | "Card";
+
+export type BankStatus = "none" | "pending" | "verified" | "connected";
+
+export interface BankAccount {
+  status: BankStatus;
+  holder: string;
+  bankName: string;
+  last4: string;
+}
+
+export interface Prefs {
+  notifPayments: boolean;
+  notifReminders: boolean;
+  notifCharges: boolean;
+  theme: "light" | "dark" | "auto";
+  language: "es" | "en";
+  currency: "USD" | "EUR" | "MXN" | "DOP";
+  dateFormat: "dmy" | "mdy" | "ymd";
+}
 
 export interface Transaction {
   id: string;

@@ -71,6 +71,8 @@ import type {
   Contract,
   ContractTemplate,
   ContractStatus,
+  BankAccount,
+  Prefs,
 } from "./lib/types";
 
 /* ============================== TYPES ============================== */
@@ -82,6 +84,27 @@ const uid = (p = "") =>
 
 const newId = (): string =>
   typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : uid();
+
+const detectBrand = (num: string): CardBrand => {
+  const n = num.replace(/\D/g, "");
+  if (/^4/.test(n)) return "Visa";
+  if (/^(5[1-5]|2[2-7])/.test(n)) return "Mastercard";
+  if (/^3[47]/.test(n)) return "Amex";
+  if (/^6(011|5|4[4-9])/.test(n)) return "Discover";
+  return "Card";
+};
+
+const DEFAULT_PREFS: Prefs = {
+  notifPayments: true,
+  notifReminders: true,
+  notifCharges: true,
+  theme: "dark",
+  language: "es",
+  currency: "USD",
+  dateFormat: "dmy",
+};
+
+const DEFAULT_BANK: BankAccount = { status: "none", holder: "", bankName: "", last4: "" };
 
 const inviteCode = () =>
   Array.from({ length: 9 }, () =>
@@ -343,7 +366,13 @@ interface Store {
   toggleDark: () => void;
   role: Role;
   setRole: (r: Role) => void;
-  user: { email: string; name: string };
+  user: { email: string; name: string; avatar?: string; provider: string };
+  updateProfile: (patch: { name?: string; avatar?: string }) => void;
+  prefs: Prefs;
+  setPrefs: (patch: Partial<Prefs>) => void;
+  bank: BankAccount;
+  connectBank: (b: { holder: string; bankName: string; last4: string }) => void;
+  disconnectBank: () => void;
   debts: Debt[];
   cards: Card[];
   notifications: AppNotification[];
@@ -351,11 +380,14 @@ interface Store {
   toast: (t: Omit<Toast, "id">) => void;
   dismissToast: (id: string) => void;
   addDebt: (d: Debt) => void;
+  updateDebt: (id: string, patch: Partial<Debt>) => void;
   applyPayment: (debtId: string, type: TxType, amount: number, concept: string, method?: string) => Transaction;
+  removePayment: (debtId: string, txId: string) => void;
   setLateInterest: (debtId: string, on: boolean) => void;
   applyAccruedInterest: (debtId: string) => void;
   setPrimaryCard: (cardId: string) => void;
   addCard: (c: Omit<Card, "id">) => void;
+  updateCard: (cardId: string, patch: { holder?: string; exp?: string }) => void;
   removeCard: (cardId: string) => void;
   readAllNotifications: () => void;
   pushNotification: (n: Omit<AppNotification, "id" | "date" | "read">) => void;
@@ -501,7 +533,27 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
-function Avatar({ name, color, size = 44 }: { name: string; color: string; size?: number }) {
+function Avatar({
+  name,
+  color,
+  size = 44,
+  avatar,
+}: {
+  name: string;
+  color: string;
+  size?: number;
+  avatar?: string;
+}) {
+  if (avatar) {
+    return (
+      <img
+        src={avatar}
+        alt={name}
+        style={{ width: size, height: size }}
+        className="shrink-0 rounded-2xl object-cover shadow-inner"
+      />
+    );
+  }
   return (
     <div
       style={{ width: size, height: size }}
@@ -1484,22 +1536,25 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
     role,
     debts,
     cards,
-    applyPayment,
     setLateInterest,
     applyAccruedInterest,
     removeDebt,
+    removePayment,
     toast,
   } = useStore();
   const debt = debts.find((d) => d.id === debtId);
   const [receipt, setReceipt] = useState<Transaction | null>(null);
-  const [payModal, setPayModal] = useState<null | "installment" | "extra" | "charge">(null);
+  const [payModal, setPayModal] = useState<null | "pay" | "charge">(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmTx, setConfirmTx] = useState<Transaction | null>(null);
+  const [editing, setEditing] = useState(false);
 
   if (!debt) return null;
   const isAdmin = role === "admin";
   const pct = progress(debt);
   const od = daysOverdue(debt.nextDueDate);
   const lp = lastPayment(debt);
+  const paid = balance(debt) <= 0 && debt.totalPaid > 0;
   const sortedTx = [...debt.transactions].sort((a, b) => +new Date(b.date) - +new Date(a.date));
 
   return (
@@ -1508,9 +1563,13 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
         title="Detalle de deuda"
         onBack={onBack}
         right={
-          <Badge tone={od > 0 ? "rose" : "emerald"}>
-            {od > 0 ? `${od}d atraso` : "Al día"}
-          </Badge>
+          paid ? (
+            <Badge tone="emerald">
+              <CheckCircle2 className="h-3 w-3" /> Pagada
+            </Badge>
+          ) : (
+            <Badge tone={od > 0 ? "rose" : "emerald"}>{od > 0 ? `${od}d atraso` : "Al día"}</Badge>
+          )
         }
       />
 
@@ -1568,23 +1627,25 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
       </Card3>
 
       {/* Actions */}
-      <div className="grid grid-cols-2 gap-3">
-        <Button size="lg" onClick={() => setPayModal("installment")}>
-          <CreditCard className="h-4 w-4" /> Pagar Cuota
+      {!isAdmin && (
+        <Button size="lg" full onClick={() => setPayModal("pay")} disabled={paid}>
+          <CreditCard className="h-4 w-4" /> {paid ? "Deuda pagada" : "Pagar"}
         </Button>
-        <Button size="lg" variant="outline" onClick={() => setPayModal("extra")}>
-          <Sparkles className="h-4 w-4" /> Pago Extra
-        </Button>
-      </div>
+      )}
 
       {isAdmin && (
         <Card3 className="space-y-4 p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
             Herramientas del administrador
           </p>
-          <Button full variant="outline" onClick={() => setPayModal("charge")}>
-            <Plus className="h-4 w-4" /> Agregar Cargo Extra
-          </Button>
+          <div className="grid grid-cols-2 gap-3">
+            <Button variant="outline" onClick={() => setEditing(true)}>
+              <PenLine className="h-4 w-4" /> Editar deuda
+            </Button>
+            <Button variant="outline" onClick={() => setPayModal("charge")}>
+              <Plus className="h-4 w-4" /> Cargo extra
+            </Button>
+          </div>
 
           <div className="rounded-2xl border border-slate-200 p-3.5 dark:border-white/10">
             <div className="flex items-center justify-between">
@@ -1641,26 +1702,25 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
             const m = txMeta[t.type];
             const Icon = m.icon;
             return (
-              <button
-                key={t.id}
-                onClick={() => setReceipt(t)}
-                className="flex w-full items-center gap-3 p-3.5 text-left transition hover:bg-slate-50 dark:hover:bg-white/[.03]"
-              >
-                <div className={cx("grid h-10 w-10 place-items-center rounded-2xl", m.tint)}>
-                  <Icon className="h-5 w-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">
-                    {t.concept}
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {fmtDate(t.date)} · {fmtTime(t.date)} · {m.label}
-                  </p>
-                </div>
-                <div className="text-right">
+              <div key={t.id} className="flex items-center gap-2 p-3.5">
+                <button
+                  onClick={() => setReceipt(t)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                >
+                  <div className={cx("grid h-10 w-10 shrink-0 place-items-center rounded-2xl", m.tint)}>
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">
+                      {t.concept}
+                    </p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {fmtDate(t.date)} · {fmtTime(t.date)} · {m.label}
+                    </p>
+                  </div>
                   <p
                     className={cx(
-                      "text-sm font-bold",
+                      "shrink-0 text-sm font-bold",
                       t.type === "payment" || t.type === "extra"
                         ? "text-emerald-500"
                         : "text-slate-900 dark:text-white"
@@ -1669,31 +1729,41 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
                     {m.sign}
                     {money(t.amount)}
                   </p>
-                  <p className="text-[11px] text-slate-400">recibo</p>
-                </div>
-              </button>
+                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => setConfirmTx(t)}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-rose-500/10 hover:text-rose-500"
+                    title="Eliminar movimiento"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
             );
           })}
         </Card3>
       </div>
 
-      <Button full variant="outline" className="text-rose-500" onClick={() => setConfirmDelete(true)}>
-        <Trash2 className="h-4 w-4" /> Eliminar deuda
-      </Button>
+      {isAdmin && (
+        <Button full variant="outline" className="text-rose-500" onClick={() => setConfirmDelete(true)}>
+          <Trash2 className="h-4 w-4" /> Eliminar deuda
+        </Button>
+      )}
 
       <PaymentModal
         kind={payModal}
         debt={debt}
-        cards={cards}
         onClose={() => setPayModal(null)}
         onDone={(t) => {
           setPayModal(null);
           setReceipt(t);
         }}
-        applyPayment={applyPayment}
       />
 
       <ReceiptModal receipt={receipt} debt={debt} onClose={() => setReceipt(null)} />
+
+      {editing && <EditDebtModal debt={debt} onClose={() => setEditing(false)} />}
 
       <Modal open={confirmDelete} onClose={() => setConfirmDelete(false)} title="Eliminar deuda">
         <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -1717,7 +1787,82 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
           </Button>
         </div>
       </Modal>
+
+      <Modal open={!!confirmTx} onClose={() => setConfirmTx(null)} title="Eliminar movimiento">
+        {confirmTx && (
+          <>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              ¿Eliminar <b className="text-slate-900 dark:text-white">{txMeta[confirmTx.type].label}</b> de{" "}
+              <b className="text-slate-900 dark:text-white">{money(confirmTx.amount)}</b>? El balance, el progreso y
+              las estadísticas se recalcularán al instante.
+            </p>
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <Button variant="outline" onClick={() => setConfirmTx(null)}>
+                Cancelar
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  removePayment(debt.id, confirmTx.id);
+                  setConfirmTx(null);
+                }}
+              >
+                <Trash2 className="h-4 w-4" /> Eliminar
+              </Button>
+            </div>
+          </>
+        )}
+      </Modal>
     </div>
+  );
+}
+
+/* ============================== EDIT DEBT ============================== */
+
+function EditDebtModal({ debt, onClose }: { debt: Debt; onClose: () => void }) {
+  const { updateDebt, toast } = useStore();
+  const [f, setF] = useState({
+    description: debt.description,
+    nextDueDate: debt.nextDueDate.slice(0, 10),
+    dailyLateFee: String(debt.dailyLateFee),
+    notes: debt.notes,
+  });
+  const set = (k: keyof typeof f, v: string) => setF((p) => ({ ...p, [k]: v }));
+  return (
+    <Modal open onClose={onClose} title="Editar deuda">
+      <div className="space-y-3.5">
+        <Field label="Descripción" icon={Receipt}>
+          <Input value={f.description} onChange={(e) => set("description", e.target.value)} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3.5">
+          <Field label="Próximo pago" icon={Calendar}>
+            <Input type="date" value={f.nextDueDate} onChange={(e) => set("nextDueDate", e.target.value)} />
+          </Field>
+          <Field label="Interés/día" icon={Percent}>
+            <Input type="number" value={f.dailyLateFee} onChange={(e) => set("dailyLateFee", e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Notas">
+          <textarea value={f.notes} onChange={(e) => set("notes", e.target.value)} rows={3} className={inputCls} />
+        </Field>
+        <Button
+          full
+          size="lg"
+          onClick={() => {
+            updateDebt(debt.id, {
+              description: f.description,
+              nextDueDate: new Date(f.nextDueDate).toISOString(),
+              dailyLateFee: Number(f.dailyLateFee) || debt.dailyLateFee,
+              notes: f.notes,
+            });
+            toast({ title: "Deuda actualizada", variant: "success" });
+            onClose();
+          }}
+        >
+          <Check className="h-4 w-4" /> Guardar cambios
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1726,68 +1871,66 @@ function DebtDetail({ debtId, onBack }: { debtId: string; onBack: () => void }) 
 function PaymentModal({
   kind,
   debt,
-  cards,
   onClose,
   onDone,
-  applyPayment,
 }: {
-  kind: null | "installment" | "extra" | "charge";
+  kind: null | "pay" | "charge";
   debt: Debt;
-  cards: Card[];
   onClose: () => void;
   onDone: (t: Transaction) => void;
-  applyPayment: Store["applyPayment"];
 }) {
+  const { cards, applyPayment, toast } = useStore();
+  const remaining = balance(debt);
   const [amount, setAmount] = useState("");
   const [concept, setConcept] = useState("");
-  const [cardId, setCardId] = useState(cards.find((c) => c.slot === "primary")?.id || cards[0]?.id);
+  const [cardId, setCardId] = useState<string | undefined>(
+    cards.find((c) => c.slot === "primary")?.id || cards[0]?.id
+  );
   const [processing, setProcessing] = useState(false);
 
   useEffect(() => {
-    if (kind === "installment") {
-      setAmount(installmentAmount(debt).toFixed(2));
-      setConcept("Pago de cuota");
-    } else if (kind === "extra") {
-      setAmount("");
-      setConcept("Abono libre");
+    if (kind === "pay") {
+      setAmount(remaining > 0 ? remaining.toFixed(2) : "");
+      setConcept("Pago");
+      setCardId(cards.find((c) => c.slot === "primary")?.id || cards[0]?.id);
     } else if (kind === "charge") {
       setAmount("");
       setConcept("");
     }
-  }, [kind, debt]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
 
   if (!kind) return null;
 
   const isCharge = kind === "charge";
   const card = cards.find((c) => c.id === cardId);
+  const amt = Number(amount) || 0;
   const chargeExamples = ["Seguro", "Repuesto", "Multa", "Dinero prestado", "Combustible", "Otros"];
-
-  const titles = {
-    installment: "Pagar Cuota",
-    extra: "Pago Extra",
-    charge: "Agregar Cargo Extra",
-  };
+  const title = isCharge ? "Agregar cargo extra" : "Realizar pago";
+  const overpay = !isCharge && amt > remaining + 0.001;
+  const canSubmit = amt > 0 && (isCharge || (!!card && !overpay));
 
   const submit = () => {
-    const amt = Number(amount);
-    if (!amt || amt <= 0) return;
+    if (!canSubmit) return;
     setProcessing(true);
     setTimeout(() => {
-      const type: TxType = isCharge ? "charge" : kind === "extra" ? "extra" : "payment";
       const t = applyPayment(
         debt.id,
-        type,
+        isCharge ? "charge" : "payment",
         amt,
-        concept || titles[kind],
+        concept || (isCharge ? "Cargo extra" : "Pago"),
         isCharge ? undefined : card ? `${card.brand} •••• ${card.last4}` : undefined
       );
       setProcessing(false);
+      if (!isCharge && t.balanceAfter <= 0) {
+        toast({ title: "¡Deuda saldada! 🎉", desc: "El balance llegó a cero.", variant: "success" });
+      }
       onDone(t);
-    }, 1100);
+    }, 1000);
   };
 
   return (
-    <Modal open={!!kind} onClose={onClose} title={titles[kind]}>
+    <Modal open={!!kind} onClose={onClose} title={title}>
       <div className="space-y-4">
         <Field label="Monto" icon={CircleDollarSign}>
           <Input
@@ -1798,6 +1941,25 @@ function PaymentModal({
             autoFocus
           />
         </Field>
+
+        {!isCharge && remaining > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {[
+              { l: "Cuota", v: Math.min(remaining, installmentAmount(debt)) },
+              { l: "Mitad", v: remaining / 2 },
+              { l: "Saldo total", v: remaining },
+            ].map((q) => (
+              <button
+                key={q.l}
+                type="button"
+                onClick={() => setAmount(q.v.toFixed(2))}
+                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-indigo-600 hover:text-white dark:bg-white/5 dark:text-slate-300"
+              >
+                {q.l} · {money(q.v)}
+              </button>
+            ))}
+          </div>
+        )}
 
         <Field label="Concepto" icon={Receipt}>
           <Input value={concept} onChange={(e) => setConcept(e.target.value)} placeholder="Concepto del movimiento" />
@@ -1831,7 +1993,7 @@ function PaymentModal({
             <div className="space-y-2">
               {cards.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-slate-300 p-3 text-center text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
-                  No payment methods added yet. Agrega una tarjeta en "Mi billetera".
+                  Aún no tienes tarjetas. Agrega una en "Mi billetera".
                 </div>
               )}
               {cards.map((c) => (
@@ -1854,7 +2016,7 @@ function PaymentModal({
                       {c.brand} •••• {c.last4}
                     </p>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {c.slot === "primary" ? "Principal" : "Secundaria"} · Exp {c.exp}
+                      {c.slot === "primary" ? "Predeterminada" : "Tarjeta"} · Exp {c.exp}
                     </p>
                   </div>
                   {cardId === c.id && <Check className="h-5 w-5 text-indigo-600" />}
@@ -1867,22 +2029,23 @@ function PaymentModal({
         <div className="rounded-2xl bg-slate-50 p-3 text-sm dark:bg-slate-800/50">
           <div className="flex justify-between text-slate-500 dark:text-slate-400">
             <span>Balance actual</span>
-            <span className="font-semibold">{money(balance(debt))}</span>
+            <span className="font-semibold">{money(remaining)}</span>
           </div>
           <div className="mt-1 flex justify-between text-slate-900 dark:text-white">
             <span>Balance después</span>
             <span className="font-bold">
-              {money(
-                Math.max(
-                  0,
-                  isCharge ? balance(debt) + (Number(amount) || 0) : balance(debt) - (Number(amount) || 0)
-                )
-              )}
+              {money(Math.max(0, isCharge ? remaining + amt : remaining - amt))}
             </span>
           </div>
         </div>
 
-        <Button full size="lg" disabled={processing || !amount} onClick={submit} variant={isCharge ? "danger" : "primary"}>
+        {overpay && (
+          <p className="text-xs font-semibold text-amber-500">
+            El monto supera el balance pendiente ({money(remaining)}).
+          </p>
+        )}
+
+        <Button full size="lg" disabled={processing || !canSubmit} onClick={submit} variant={isCharge ? "danger" : "primary"}>
           {processing ? (
             <>
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
@@ -1891,7 +2054,7 @@ function PaymentModal({
           ) : (
             <>
               {isCharge ? <Plus className="h-4 w-4" /> : <Check className="h-4 w-4" />}
-              {isCharge ? "Agregar cargo" : "Procesar pago"}
+              {isCharge ? "Agregar cargo" : `Pagar ${amt > 0 ? money(amt) : ""}`}
             </>
           )}
         </Button>
@@ -2015,6 +2178,10 @@ function BrandMark({ brand, small }: { brand: CardBrand; small?: boolean }) {
     return <span className={cx("font-extrabold italic", small ? "text-xs" : "text-lg")}>VISA</span>;
   if (brand === "Amex")
     return <span className={cx("font-extrabold", small ? "text-[9px]" : "text-sm")}>AMEX</span>;
+  if (brand === "Discover")
+    return <span className={cx("font-extrabold", small ? "text-[8px]" : "text-xs")}>DISCOVER</span>;
+  if (brand === "Card")
+    return <CreditCard className={small ? "h-4 w-4" : "h-6 w-6"} />;
   return (
     <div className="flex items-center">
       <span className={cx("rounded-full bg-red-500", small ? "h-3 w-3" : "h-5 w-5")} />
@@ -2023,34 +2190,151 @@ function BrandMark({ brand, small }: { brand: CardBrand; small?: boolean }) {
   );
 }
 
-function Wallet2({ onBack }: { onBack: () => void }) {
-  const { cards, setPrimaryCard, addCard, removeCard, toast } = useStore();
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ brand: "Visa" as CardBrand, number: "", exp: "", holder: CREDITOR_NAME });
+const brandColor = (b: CardBrand): string =>
+  b === "Visa"
+    ? "from-indigo-600 via-violet-600 to-fuchsia-600"
+    : b === "Amex"
+    ? "from-cyan-600 via-sky-600 to-blue-700"
+    : b === "Discover"
+    ? "from-orange-500 via-amber-500 to-orange-600"
+    : b === "Mastercard"
+    ? "from-slate-800 via-slate-700 to-zinc-900"
+    : "from-slate-700 via-slate-600 to-slate-800";
 
-  const primary = cards.find((c) => c.slot === "primary");
-  const secondary = cards.find((c) => c.slot === "secondary");
+function CardForm({
+  editing,
+  onClose,
+}: {
+  editing: Card | null;
+  onClose: () => void;
+}) {
+  const { addCard, updateCard, cards, toast } = useStore();
+  const [f, setF] = useState({
+    holder: editing?.holder || "",
+    number: "",
+    exp: editing?.exp || "",
+    cvv: "",
+    zip: "",
+    address: "",
+    makeDefault: editing?.slot === "primary" || cards.length === 0,
+  });
+  const brand = editing ? editing.brand : detectBrand(f.number);
+  const set = (k: keyof typeof f, v: string | boolean) => setF((p) => ({ ...p, [k]: v }));
+
+  const fmtNumber = (v: string) =>
+    v.replace(/\D/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim();
+  const fmtExp = (v: string) => {
+    const d = v.replace(/\D/g, "").slice(0, 4);
+    return d.length >= 3 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+  };
+
+  const valid = editing
+    ? f.holder.trim().length > 1 && /^\d{2}\/\d{2}$/.test(f.exp)
+    : f.holder.trim().length > 1 &&
+      f.number.replace(/\D/g, "").length >= 15 &&
+      /^\d{2}\/\d{2}$/.test(f.exp) &&
+      f.cvv.length >= 3;
 
   const save = () => {
-    const digits = form.number.replace(/\D/g, "");
-    const last4 = digits.slice(-4) || "0000";
-    addCard({
-      brand: form.brand,
-      last4,
-      exp: form.exp || "12/28",
-      holder: form.holder || CREDITOR_NAME,
-      slot: cards.length === 0 ? "primary" : "secondary",
-      color:
-        form.brand === "Visa"
-          ? "from-indigo-600 via-violet-600 to-fuchsia-600"
-          : form.brand === "Amex"
-          ? "from-cyan-600 via-sky-600 to-blue-700"
-          : "from-slate-800 via-slate-700 to-zinc-900",
-    });
-    toast({ title: "Tarjeta agregada", variant: "success" });
-    setAdding(false);
-    setForm({ brand: "Visa", number: "", exp: "", holder: CREDITOR_NAME });
+    if (!valid) return;
+    if (editing) {
+      updateCard(editing.id, { holder: f.holder, exp: f.exp });
+      toast({ title: "Tarjeta actualizada", variant: "success" });
+    } else {
+      const last4 = f.number.replace(/\D/g, "").slice(-4) || "0000";
+      addCard({
+        brand,
+        last4,
+        exp: f.exp,
+        holder: f.holder,
+        slot: f.makeDefault ? "primary" : "secondary",
+        color: brandColor(brand),
+      });
+      toast({ title: "Tarjeta agregada", desc: `${brand} •••• ${last4}`, variant: "success" });
+    }
+    onClose();
   };
+
+  return (
+    <Modal open onClose={onClose} title={editing ? "Editar tarjeta" : "Agregar tarjeta"}>
+      <div className="space-y-3.5">
+        <Field label="Nombre del titular" icon={User}>
+          <Input value={f.holder} onChange={(e) => set("holder", e.target.value)} placeholder="Como aparece en la tarjeta" autoFocus />
+        </Field>
+        <Field label="Número de tarjeta" icon={CreditCard}>
+          <div className="relative">
+            <Input
+              inputMode="numeric"
+              value={editing ? `•••• •••• •••• ${editing.last4}` : f.number}
+              onChange={(e) => set("number", fmtNumber(e.target.value))}
+              placeholder="1234 5678 9012 3456"
+              disabled={!!editing}
+              className="pr-14"
+            />
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-300">
+              <BrandMark brand={brand} small />
+            </div>
+          </div>
+        </Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Expira" icon={Calendar}>
+            <Input value={f.exp} onChange={(e) => set("exp", fmtExp(e.target.value))} placeholder="MM/AA" inputMode="numeric" />
+          </Field>
+          {!editing && (
+            <Field label="CVV" icon={Lock}>
+              <Input
+                value={f.cvv}
+                onChange={(e) => set("cvv", e.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="123"
+                inputMode="numeric"
+              />
+            </Field>
+          )}
+          {!editing && (
+            <Field label="ZIP" icon={FileText}>
+              <Input value={f.zip} onChange={(e) => set("zip", e.target.value)} placeholder="00000" />
+            </Field>
+          )}
+        </div>
+        {!editing && (
+          <Field label="Dirección de facturación (opcional)" icon={FileText}>
+            <Input value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="Calle, ciudad, país" />
+          </Field>
+        )}
+        {!editing && (
+          <button
+            type="button"
+            onClick={() => set("makeDefault", !f.makeDefault)}
+            className="flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300"
+          >
+            <span
+              className={cx(
+                "grid h-5 w-5 place-items-center rounded-md border transition",
+                f.makeDefault ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-300 dark:border-slate-600"
+              )}
+            >
+              {f.makeDefault && <Check className="h-3.5 w-3.5" />}
+            </span>
+            Establecer como predeterminada
+          </button>
+        )}
+        <Button full size="lg" disabled={!valid} onClick={save}>
+          <Check className="h-4 w-4" /> {editing ? "Guardar cambios" : "Guardar tarjeta"}
+        </Button>
+        <p className="text-center text-[11px] text-slate-400">
+          🔒 El CVV no se almacena. Pago seguro (listo para Stripe).
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+function Wallet2({ onBack }: { onBack: () => void }) {
+  const { cards, setPrimaryCard, removeCard, toast } = useStore();
+  const [adding, setAdding] = useState(false);
+  const [editCard, setEditCard] = useState<Card | null>(null);
+  const [confirmCard, setConfirmCard] = useState<Card | null>(null);
+  const ordered = [...cards].sort((a, b) => (a.slot === "primary" ? -1 : b.slot === "primary" ? 1 : 0));
 
   return (
     <div className="space-y-5">
@@ -2067,7 +2351,7 @@ function Wallet2({ onBack }: { onBack: () => void }) {
         }
       />
       <p className="text-sm text-slate-500 dark:text-slate-400">
-        Gestiona tus dos tarjetas: principal y secundaria. Cámbialas según el pago.
+        Agrega todas las tarjetas que necesites. Elige una predeterminada y cámbiala al pagar.
       </p>
 
       <div className="space-y-4">
@@ -2077,35 +2361,29 @@ function Wallet2({ onBack }: { onBack: () => void }) {
               <CreditCard className="h-7 w-7" />
             </div>
             <div>
-              <p className="font-bold text-slate-900 dark:text-white">No payment methods added yet.</p>
+              <p className="font-bold text-slate-900 dark:text-white">Aún no tienes tarjetas</p>
               <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-                Agrega una tarjeta para empezar a registrar pagos.
+                Agrega una tarjeta para realizar tus pagos.
               </p>
             </div>
             <Button onClick={() => setAdding(true)}>
-              <Plus className="h-4 w-4" /> Add Payment Method
+              <Plus className="h-4 w-4" /> Agregar tarjeta
             </Button>
           </Card3>
         )}
-        {cards.map((c) => (
+        {ordered.map((c) => (
           <div key={c.id} className="animate-fade-in">
-            <div
-              className={cx(
-                "relative overflow-hidden rounded-3xl bg-gradient-to-br p-5 text-white shadow-xl",
-                c.color
-              )}
-            >
+            <div className={cx("relative overflow-hidden rounded-3xl bg-gradient-to-br p-5 text-white shadow-xl", c.color)}>
               <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-white/10" />
               <div className="absolute -bottom-10 -left-6 h-32 w-32 rounded-full bg-white/5" />
               <div className="relative flex items-start justify-between">
                 <div>
-                  <p className="text-xs uppercase tracking-widest text-white/70">
-                    {c.slot === "primary" ? "Tarjeta Principal" : "Tarjeta Secundaria"}
-                  </p>
-                  {c.slot === "primary" && (
+                  {c.slot === "primary" ? (
                     <Badge tone="indigo">
-                      <Star className="h-3 w-3 fill-current" /> Activa
+                      <Star className="h-3 w-3 fill-current" /> Predeterminada
                     </Badge>
+                  ) : (
+                    <span className="text-xs uppercase tracking-widest text-white/70">Tarjeta</span>
                   )}
                 </div>
                 <div className="grid h-9 w-12 place-items-center rounded-lg bg-white/15">
@@ -2136,88 +2414,56 @@ function Wallet2({ onBack }: { onBack: () => void }) {
               </div>
             </div>
             <div className="mt-2 flex gap-2">
-              <Button
-                size="sm"
-                variant={c.slot === "primary" ? "secondary" : "outline"}
-                className="flex-1"
-                onClick={() => {
-                  setPrimaryCard(c.id);
-                  toast({ title: "Tarjeta activa actualizada", desc: `${c.brand} •••• ${c.last4}`, variant: "info" });
-                }}
-              >
-                <Check className="h-4 w-4" />
-                {c.slot === "primary" ? "Tarjeta para pago" : "Usar para pago"}
-              </Button>
-              {cards.length > 1 && (
-                <Button size="sm" variant="ghost" onClick={() => removeCard(c.id)}>
-                  <Trash2 className="h-4 w-4" />
+              {c.slot !== "primary" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => {
+                    setPrimaryCard(c.id);
+                    toast({ title: "Predeterminada actualizada", desc: `${c.brand} •••• ${c.last4}`, variant: "info" });
+                  }}
+                >
+                  <Star className="h-4 w-4" /> Predeterminar
                 </Button>
               )}
+              <Button size="sm" variant="ghost" className={c.slot === "primary" ? "flex-1" : ""} onClick={() => setEditCard(c)}>
+                <PenLine className="h-4 w-4" /> Editar
+              </Button>
+              <Button size="sm" variant="ghost" className="text-rose-500" onClick={() => setConfirmCard(c)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         ))}
       </div>
 
-      {primary && secondary && (
-        <Card3 className="flex items-center gap-3 p-4">
-          <div className="grid h-10 w-10 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-500">
-            <CreditCard className="h-5 w-5" />
-          </div>
-          <p className="flex-1 text-sm text-slate-600 dark:text-slate-300">
-            Alterna tu tarjeta activa entre <b>{primary.brand}</b> y <b>{secondary.brand}</b>.
-          </p>
-          <Button
-            size="sm"
-            onClick={() => {
-              setPrimaryCard(secondary.id);
-              toast({ title: "Tarjetas alternadas", desc: `Activa: ${secondary.brand} •••• ${secondary.last4}`, variant: "info" });
-            }}
-          >
-            Alternar
-          </Button>
-        </Card3>
-      )}
+      {adding && <CardForm editing={null} onClose={() => setAdding(false)} />}
+      {editCard && <CardForm editing={editCard} onClose={() => setEditCard(null)} />}
 
-      <Modal open={adding} onClose={() => setAdding(false)} title="Agregar tarjeta">
-        <div className="space-y-4">
-          <Field label="Marca" icon={CreditCard}>
-            <div className="grid grid-cols-3 gap-2">
-              {(["Visa", "Mastercard", "Amex"] as CardBrand[]).map((b) => (
-                <button
-                  key={b}
-                  type="button"
-                  onClick={() => setForm((f) => ({ ...f, brand: b }))}
-                  className={cx(
-                    "rounded-2xl border py-2.5 text-sm font-semibold transition",
-                    form.brand === b
-                      ? "border-indigo-600 bg-indigo-600 text-white"
-                      : "border-slate-200 text-slate-600 dark:border-white/10 dark:text-slate-300"
-                  )}
-                >
-                  {b}
-                </button>
-              ))}
+      <Modal open={!!confirmCard} onClose={() => setConfirmCard(null)} title="Eliminar tarjeta">
+        {confirmCard && (
+          <>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              ¿Eliminar la tarjeta <b className="text-slate-900 dark:text-white">{confirmCard.brand} •••• {confirmCard.last4}</b>?
+            </p>
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <Button variant="outline" onClick={() => setConfirmCard(null)}>
+                Cancelar
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  removeCard(confirmCard.id);
+                  toast({ title: "Tarjeta eliminada", variant: "info" });
+                  setConfirmCard(null);
+                }}
+              >
+                <Trash2 className="h-4 w-4" /> Eliminar
+              </Button>
             </div>
-          </Field>
-          <Field label="Número de tarjeta" icon={CreditCard}>
-            <Input
-              value={form.number}
-              onChange={(e) => setForm((f) => ({ ...f, number: e.target.value }))}
-              placeholder="4242 4242 4242 4242"
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Expiración" icon={Calendar}>
-              <Input value={form.exp} onChange={(e) => setForm((f) => ({ ...f, exp: e.target.value }))} placeholder="MM/AA" />
-            </Field>
-            <Field label="Titular" icon={User}>
-              <Input value={form.holder} onChange={(e) => setForm((f) => ({ ...f, holder: e.target.value }))} />
-            </Field>
-          </div>
-          <Button full size="lg" onClick={save}>
-            <Plus className="h-4 w-4" /> Guardar tarjeta
-          </Button>
-        </div>
+          </>
+        )}
       </Modal>
     </div>
   );
@@ -2268,77 +2514,330 @@ function Notifications({ onBack }: { onBack: () => void }) {
 
 /* ============================== SETTINGS ============================== */
 
-function SettingsScreen({ onBack, onWallet }: { onBack: () => void; onWallet: () => void }) {
-  const { user, dark, toggleDark, logout, cards, resetData, toast } = useStore();
+function SGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="mb-2 px-1 text-xs font-bold uppercase tracking-wide text-slate-400">{title}</p>
+      <Card3 className="divide-y divide-slate-100 dark:divide-white/5">{children}</Card3>
+    </div>
+  );
+}
+
+function SRow({
+  icon: Icon,
+  label,
+  desc,
+  onClick,
+  right,
+  danger,
+}: {
+  icon: LucideIcon;
+  label: string;
+  desc?: string;
+  onClick?: () => void;
+  right?: ReactNode;
+  danger?: boolean;
+}) {
+  const inner = (
+    <>
+      <div
+        className={cx(
+          "grid h-10 w-10 shrink-0 place-items-center rounded-2xl",
+          danger ? "bg-rose-500/10 text-rose-500" : "bg-slate-100 text-slate-600 dark:bg-white/5 dark:text-slate-300"
+        )}
+      >
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1 text-left">
+        <p className={cx("text-sm font-semibold", danger ? "text-rose-500" : "text-slate-900 dark:text-white")}>{label}</p>
+        {desc && <p className="truncate text-xs text-slate-500 dark:text-slate-400">{desc}</p>}
+      </div>
+    </>
+  );
+  return (
+    <div className="flex items-center gap-3 p-3.5">
+      {onClick ? (
+        <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl transition hover:opacity-70">
+          {inner}
+        </button>
+      ) : (
+        <div className="flex min-w-0 flex-1 items-center gap-3">{inner}</div>
+      )}
+      {right || (onClick && <ChevronRight className="h-5 w-5 shrink-0 text-slate-300" />)}
+    </div>
+  );
+}
+
+function Select<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as T)}
+      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-semibold text-slate-700 outline-none dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-200"
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function SettingsScreen({
+  onBack,
+  onWallet,
+  onBank,
+  onProfile,
+}: {
+  onBack: () => void;
+  onWallet: () => void;
+  onBank: () => void;
+  onProfile: () => void;
+}) {
+  const { user, role, prefs, setPrefs, bank, cards, logout, resetData, toast } = useStore();
+  const isAdmin = role === "admin";
   const [confirmReset, setConfirmReset] = useState(false);
-  const rows: { icon: LucideIcon; label: string; desc: string; onClick?: () => void; right?: ReactNode }[] = [
-    { icon: User, label: "Perfil", desc: user.email },
-    { icon: CreditCard, label: "Métodos de pago", desc: `${cards.length} tarjetas registradas`, onClick: onWallet },
-    {
-      icon: Bell,
-      label: "Notificaciones",
-      desc: "Pagos, cargos e intereses",
-      right: <Toggle on onChange={() => {}} />,
-    },
-    {
-      icon: dark ? Moon : Sun,
-      label: "Apariencia",
-      desc: dark ? "Modo oscuro" : "Modo claro",
-      right: <Toggle on={dark} onChange={toggleDark} />,
-    },
-    { icon: ShieldCheck, label: "Seguridad", desc: "Contraseña y biometría", right: <Fingerprint className="h-5 w-5 text-slate-400" /> },
-  ];
+  const [modal, setModal] = useState<null | "password" | "sessions" | "devices" | "legal">(null);
+  const [legalTitle, setLegalTitle] = useState("");
+
+  const support = (subject: string) =>
+    window.open(`mailto:soporte@2payback.app?subject=${encodeURIComponent(subject)}`, "_blank");
+
+  const changePassword = () => {
+    if (isSupabaseConfigured && supabase && user.email) {
+      supabase.auth.resetPasswordForEmail(user.email, { redirectTo: window.location.origin }).catch(() => {});
+    }
+    setModal(null);
+    toast({ title: "Enlace enviado", desc: "Revisa tu correo para cambiar la contraseña.", variant: "success" });
+  };
+
+  const closeAllSessions = () => {
+    setModal(null);
+    if (isSupabaseConfigured && supabase) supabase.auth.signOut({ scope: "global" });
+    logout();
+  };
+
+  const bankDesc =
+    bank.status === "connected" || bank.status === "verified"
+      ? `${bank.bankName} •••• ${bank.last4}`
+      : bank.status === "pending"
+      ? "Pendiente de verificación"
+      : "No conectada";
 
   return (
     <div className="space-y-5">
       <ScreenHeader title="Configuración" onBack={onBack} />
 
-      <Card3 className="p-5">
-        <div className="flex items-center gap-4">
-          <Avatar name={user.name} color="from-indigo-500 to-violet-600" size={56} />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-lg font-bold text-slate-900 dark:text-white">{user.name}</p>
-            <p className="truncate text-sm text-slate-500 dark:text-slate-400">{user.email}</p>
+      <Card3 className="flex items-center gap-4 p-4" onClick={onProfile}>
+        <Avatar name={user.name} avatar={user.avatar} color="from-indigo-500 to-violet-600" size={56} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-lg font-bold text-slate-900 dark:text-white">{user.name}</p>
+          <p className="truncate text-sm text-slate-500 dark:text-slate-400">{user.email}</p>
+          <Badge tone="indigo">{isAdmin ? "Administrador" : "Cliente"}</Badge>
+        </div>
+        <ChevronRight className="h-5 w-5 text-slate-300" />
+      </Card3>
+
+      <SGroup title="Cuenta">
+        {isAdmin ? (
+          <SRow icon={Banknote} label="Cuenta bancaria para recibir pagos" desc={bankDesc} onClick={onBank} />
+        ) : (
+          <SRow icon={CreditCard} label="Métodos de pago" desc={`${cards.length} tarjeta(s) registrada(s)`} onClick={onWallet} />
+        )}
+        <SRow icon={User} label="Perfil" desc="Nombre, foto y datos de la cuenta" onClick={onProfile} />
+      </SGroup>
+
+      <SGroup title="Notificaciones">
+        <SRow
+          icon={Banknote}
+          label="Confirmaciones de pago"
+          right={<Toggle on={prefs.notifPayments} onChange={(v) => setPrefs({ notifPayments: v })} />}
+        />
+        <SRow
+          icon={Clock}
+          label="Recordatorios de pago"
+          right={<Toggle on={prefs.notifReminders} onChange={(v) => setPrefs({ notifReminders: v })} />}
+        />
+        <SRow
+          icon={Plus}
+          label="Cargos extra e intereses"
+          right={<Toggle on={prefs.notifCharges} onChange={(v) => setPrefs({ notifCharges: v })} />}
+        />
+      </SGroup>
+
+      <SGroup title="Apariencia">
+        <div className="p-3.5">
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              { v: "light", l: "Claro", icon: Sun },
+              { v: "dark", l: "Oscuro", icon: Moon },
+              { v: "auto", l: "Automático", icon: Sparkles },
+            ] as const).map((o) => (
+              <button
+                key={o.v}
+                onClick={() => setPrefs({ theme: o.v })}
+                className={cx(
+                  "flex flex-col items-center gap-1.5 rounded-2xl border py-3 text-xs font-semibold transition",
+                  prefs.theme === o.v
+                    ? "border-indigo-600 bg-indigo-500/5 text-indigo-600 dark:text-indigo-400"
+                    : "border-slate-200 text-slate-600 dark:border-white/10 dark:text-slate-300"
+                )}
+              >
+                <o.icon className="h-5 w-5" /> {o.l}
+              </button>
+            ))}
           </div>
         </div>
-        <div className="mt-4">
-          <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">Rol activo</p>
+      </SGroup>
+
+      <SGroup title="Preferencias">
+        <SRow
+          icon={LayoutGrid}
+          label="Idioma"
+          right={
+            <Select
+              value={prefs.language}
+              onChange={(v) => setPrefs({ language: v })}
+              options={[
+                { value: "es", label: "Español" },
+                { value: "en", label: "English" },
+              ]}
+            />
+          }
+        />
+        <SRow
+          icon={CircleDollarSign}
+          label="Moneda"
+          right={
+            <Select
+              value={prefs.currency}
+              onChange={(v) => setPrefs({ currency: v })}
+              options={[
+                { value: "USD", label: "USD $" },
+                { value: "EUR", label: "EUR €" },
+                { value: "MXN", label: "MXN $" },
+                { value: "DOP", label: "DOP RD$" },
+              ]}
+            />
+          }
+        />
+        <SRow
+          icon={Calendar}
+          label="Formato de fecha"
+          right={
+            <Select
+              value={prefs.dateFormat}
+              onChange={(v) => setPrefs({ dateFormat: v })}
+              options={[
+                { value: "dmy", label: "DD/MM/AAAA" },
+                { value: "mdy", label: "MM/DD/AAAA" },
+                { value: "ymd", label: "AAAA-MM-DD" },
+              ]}
+            />
+          }
+        />
+      </SGroup>
+
+      <SGroup title="Seguridad">
+        <SRow icon={Lock} label="Cambiar contraseña" desc="Te enviamos un enlace por correo" onClick={() => setModal("password")} />
+        <SRow icon={LogOut} label="Cerrar todas las sesiones" onClick={() => setModal("sessions")} />
+        <SRow icon={Fingerprint} label="Dispositivos conectados" onClick={() => setModal("devices")} />
+        <SRow icon={ShieldCheck} label="Autenticación de dos factores" right={<Badge tone="slate">Próximamente</Badge>} />
+      </SGroup>
+
+      <SGroup title="Soporte">
+        <SRow icon={ShieldCheck} label="Centro de ayuda" onClick={() => support("Ayuda 2PayBack")} />
+        <SRow icon={Send} label="Contactar soporte" onClick={() => support("Contacto soporte")} />
+        <SRow icon={AlertTriangle} label="Reportar un problema" onClick={() => support("Reporte de problema")} />
+        <SRow icon={Sparkles} label="Enviar sugerencias" onClick={() => support("Sugerencia")} />
+      </SGroup>
+
+      <SGroup title="Información">
+        <SRow icon={ShieldCheck} label="Política de privacidad" onClick={() => { setLegalTitle("Política de privacidad"); setModal("legal"); }} />
+        <SRow icon={FileText} label="Términos y condiciones" onClick={() => { setLegalTitle("Términos y condiciones"); setModal("legal"); }} />
+        <SRow icon={FileText} label="Licencias" onClick={() => { setLegalTitle("Licencias"); setModal("legal"); }} />
+        <SRow icon={LayoutGrid} label="Versión de la aplicación" right={<span className="text-sm font-semibold text-slate-400">2PayBack v1.0</span>} />
+      </SGroup>
+
+      <SGroup title="Modo de vista (demo)">
+        <div className="p-3.5">
+          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+            Cambia entre la vista de Administrador y la de Cliente para probar la app.
+          </p>
           <RoleSwitch />
         </div>
-      </Card3>
+      </SGroup>
 
-      <Card3 className="divide-y divide-slate-100 dark:divide-white/5">
-        {rows.map((r) => (
-          <button
-            key={r.label}
-            onClick={r.onClick}
-            className="flex w-full items-center gap-3 p-4 text-left transition hover:bg-slate-50 dark:hover:bg-white/[.03]"
-          >
-            <div className="grid h-10 w-10 place-items-center rounded-2xl bg-slate-100 text-slate-600 dark:bg-white/5 dark:text-slate-300">
-              <r.icon className="h-5 w-5" />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.label}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{r.desc}</p>
-            </div>
-            {r.right || <ChevronRight className="h-5 w-5 text-slate-300" />}
-          </button>
-        ))}
-      </Card3>
-
-      <Button full variant="outline" className="text-rose-500" onClick={() => setConfirmReset(true)}>
-        <Trash2 className="h-4 w-4" /> Borrar todas las deudas de ejemplo
-      </Button>
+      {isAdmin && (
+        <Button full variant="outline" className="text-rose-500" onClick={() => setConfirmReset(true)}>
+          <Trash2 className="h-4 w-4" /> Borrar todas las deudas de ejemplo
+        </Button>
+      )}
 
       <Button full variant="danger" onClick={logout}>
         <LogOut className="h-4 w-4" /> Cerrar sesión
       </Button>
       <p className="pb-2 text-center text-xs text-slate-400">2PayBack v1.0 · Hecho con 💜</p>
 
+      <Modal open={modal === "password"} onClose={() => setModal(null)} title="Cambiar contraseña">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Te enviaremos un enlace seguro a <b className="text-slate-900 dark:text-white">{user.email}</b> para
+          establecer una nueva contraseña.
+        </p>
+        <Button full size="lg" className="mt-4" onClick={changePassword}>
+          <Send className="h-4 w-4" /> Enviar enlace
+        </Button>
+      </Modal>
+
+      <Modal open={modal === "sessions"} onClose={() => setModal(null)} title="Cerrar todas las sesiones">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Se cerrará la sesión en todos tus dispositivos. Tendrás que volver a iniciar sesión.
+        </p>
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <Button variant="outline" onClick={() => setModal(null)}>
+            Cancelar
+          </Button>
+          <Button variant="danger" onClick={closeAllSessions}>
+            <LogOut className="h-4 w-4" /> Cerrar todas
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal open={modal === "devices"} onClose={() => setModal(null)} title="Dispositivos conectados">
+        <div className="flex items-center gap-3 rounded-2xl border border-slate-200 p-3 dark:border-white/10">
+          <div className="grid h-10 w-10 place-items-center rounded-2xl bg-emerald-500/10 text-emerald-500">
+            <Fingerprint className="h-5 w-5" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">Este dispositivo</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Sesión activa ahora</p>
+          </div>
+          <Badge tone="emerald">Actual</Badge>
+        </div>
+        <p className="mt-3 text-xs text-slate-400">No hay otras sesiones activas.</p>
+      </Modal>
+
+      <Modal open={modal === "legal"} onClose={() => setModal(null)} title={legalTitle}>
+        <p className="text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+          2PayBack es una plataforma de financiamiento privado. {legalTitle} — documento de ejemplo. El uso de la
+          aplicación implica la aceptación de las condiciones del servicio. Tus datos se almacenan de forma segura y
+          no se comparten con terceros sin tu consentimiento.
+        </p>
+      </Modal>
+
       <Modal open={confirmReset} onClose={() => setConfirmReset(false)} title="Borrar datos de ejemplo">
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Se eliminarán <b className="text-slate-900 dark:text-white">todas las deudas</b> y notificaciones
-          para que empieces desde cero con tus datos reales. Tus tarjetas se conservan.
+          Se eliminarán <b className="text-slate-900 dark:text-white">todas las deudas</b> y notificaciones para que
+          empieces desde cero con tus datos reales. Tus tarjetas se conservan.
         </p>
         <div className="mt-5 grid grid-cols-2 gap-3">
           <Button variant="outline" onClick={() => setConfirmReset(false)}>
@@ -2348,7 +2847,7 @@ function SettingsScreen({ onBack, onWallet }: { onBack: () => void; onWallet: ()
             variant="danger"
             onClick={() => {
               resetData();
-              toast({ title: "Datos borrados", desc: "Empieza a crear tus deudas reales.", variant: "success" });
+              toast({ title: "Datos borrados", variant: "success" });
               setConfirmReset(false);
               onBack();
             }}
@@ -2357,6 +2856,175 @@ function SettingsScreen({ onBack, onWallet }: { onBack: () => void; onWallet: ()
           </Button>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+function ProfileScreen({ onBack }: { onBack: () => void }) {
+  const { user, updateProfile, role, toast } = useStore();
+  const [name, setName] = useState(user.name);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const pickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      updateProfile({ avatar: reader.result as string });
+      toast({ title: "Foto actualizada", variant: "success" });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="space-y-5">
+      <ScreenHeader title="Mi perfil" onBack={onBack} />
+
+      <Card3 className="flex flex-col items-center gap-3 p-6">
+        <button onClick={() => fileRef.current?.click()} className="relative">
+          <Avatar name={user.name} avatar={user.avatar} color="from-indigo-500 to-violet-600" size={88} />
+          <span className="absolute -bottom-1 -right-1 grid h-8 w-8 place-items-center rounded-full bg-indigo-600 text-white shadow-lg">
+            <PenLine className="h-4 w-4" />
+          </span>
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickPhoto} />
+        <p className="text-lg font-bold text-slate-900 dark:text-white">{user.name}</p>
+        <Badge tone="indigo">{role === "admin" ? "Administrador" : "Cliente"}</Badge>
+      </Card3>
+
+      <Card3 className="space-y-3.5 p-4">
+        <Field label="Nombre" icon={User}>
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Correo electrónico" icon={Mail}>
+          <Input value={user.email} disabled />
+        </Field>
+        <Field label="Método de inicio de sesión" icon={ShieldCheck}>
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-white/10 dark:bg-slate-800/60">
+            {user.provider === "google" ? (
+              <>
+                <GoogleIcon /> <span className="font-semibold">Google</span>
+              </>
+            ) : user.provider === "apple" ? (
+              <>
+                <AppleIcon /> <span className="font-semibold">Apple</span>
+              </>
+            ) : (
+              <>
+                <Mail className="h-4 w-4" /> <span className="font-semibold">Email y contraseña</span>
+              </>
+            )}
+          </div>
+        </Field>
+      </Card3>
+
+      <Button
+        full
+        size="lg"
+        disabled={name.trim() === user.name || name.trim().length < 2}
+        onClick={() => {
+          updateProfile({ name: name.trim() });
+          toast({ title: "Perfil actualizado", variant: "success" });
+          onBack();
+        }}
+      >
+        <Check className="h-4 w-4" /> Guardar cambios
+      </Button>
+    </div>
+  );
+}
+
+function BankScreen({ onBack }: { onBack: () => void }) {
+  const { bank, connectBank, disconnectBank } = useStore();
+  const [form, setForm] = useState({ holder: "", bankName: "", account: "" });
+  const [connecting, setConnecting] = useState(false);
+
+  const statusMeta: Record<BankAccount["status"], { label: string; tone: "slate" | "amber" | "emerald" | "indigo"; desc: string }> = {
+    none: { label: "No conectada", tone: "slate", desc: "Conecta una cuenta para recibir los pagos de tus clientes." },
+    pending: { label: "Pendiente de verificación", tone: "amber", desc: "Estamos verificando tu cuenta bancaria." },
+    verified: { label: "Verificada", tone: "emerald", desc: "Tu cuenta está verificada y lista." },
+    connected: { label: "Conectada", tone: "indigo", desc: "Recibiendo pagos en esta cuenta." },
+  };
+  const sm = statusMeta[bank.status];
+
+  return (
+    <div className="space-y-5">
+      <ScreenHeader title="Cuenta para recibir pagos" onBack={onBack} right={<Badge tone={sm.tone}>{sm.label}</Badge>} />
+
+      <Card3 className="overflow-hidden">
+        <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-900 p-5 text-white">
+          <div className="flex items-center justify-between">
+            <Banknote className="h-7 w-7" />
+            <Badge tone={sm.tone}>{sm.label}</Badge>
+          </div>
+          {bank.status === "none" ? (
+            <p className="mt-6 text-sm text-white/70">Aún no has conectado una cuenta bancaria.</p>
+          ) : (
+            <>
+              <p className="mt-6 text-xs uppercase tracking-widest text-white/60">{bank.bankName}</p>
+              <p className="text-2xl font-bold tracking-widest">•••• •••• {bank.last4}</p>
+              <p className="mt-1 text-sm text-white/70">{bank.holder}</p>
+            </>
+          )}
+        </div>
+        <div className="p-4">
+          <p className="text-sm text-slate-500 dark:text-slate-400">{sm.desc}</p>
+          <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+            <ShieldCheck className="h-4 w-4" /> Procesado de forma segura · listo para Stripe Connect
+          </div>
+        </div>
+      </Card3>
+
+      {bank.status === "none" ? (
+        <Card3 className="space-y-3.5 p-4">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Conectar cuenta bancaria</p>
+          <Field label="Titular de la cuenta" icon={User}>
+            <Input value={form.holder} onChange={(e) => setForm((f) => ({ ...f, holder: e.target.value }))} />
+          </Field>
+          <Field label="Banco" icon={Banknote}>
+            <Input value={form.bankName} onChange={(e) => setForm((f) => ({ ...f, bankName: e.target.value }))} placeholder="Ej. Banco Popular" />
+          </Field>
+          <Field label="Número de cuenta" icon={CreditCard}>
+            <Input
+              value={form.account}
+              onChange={(e) => setForm((f) => ({ ...f, account: e.target.value.replace(/\D/g, "") }))}
+              placeholder="0000000000"
+              inputMode="numeric"
+            />
+          </Field>
+          <Button
+            full
+            size="lg"
+            disabled={connecting || form.holder.length < 2 || form.bankName.length < 2 || form.account.length < 4}
+            onClick={() => {
+              setConnecting(true);
+              setTimeout(() => {
+                connectBank({ holder: form.holder, bankName: form.bankName, last4: form.account.slice(-4) });
+                setConnecting(false);
+              }, 900);
+            }}
+          >
+            {connecting ? (
+              <>
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> Conectando...
+              </>
+            ) : (
+              <>
+                <Banknote className="h-4 w-4" /> Conectar cuenta
+              </>
+            )}
+          </Button>
+        </Card3>
+      ) : (
+        <div className="space-y-3">
+          <Button full variant="outline" onClick={() => disconnectBank()}>
+            <PenLine className="h-4 w-4" /> Cambiar cuenta bancaria
+          </Button>
+          <Button full variant="ghost" className="text-rose-500" onClick={() => disconnectBank()}>
+            <Trash2 className="h-4 w-4" /> Eliminar cuenta
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2879,13 +3547,27 @@ function ContractDetail({ contractId, onBack }: { contractId: string; onBack: ()
 
 /* ============================== SHELL / NAV ============================== */
 
-type Screen = "dashboard" | "create" | "detail" | "wallet" | "notifications" | "settings" | "contracts";
+type Screen =
+  | "dashboard"
+  | "create"
+  | "detail"
+  | "wallet"
+  | "notifications"
+  | "settings"
+  | "contracts"
+  | "bank"
+  | "profile";
 
 function AppShell() {
   const { role, dark, toggleDark, notifications, user } = useStore();
+  const isAdmin = role === "admin";
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [selected, setSelected] = useState<string | null>(null);
   const unread = notifications.filter((n) => !n.read).length;
+
+  useEffect(() => {
+    setScreen("dashboard");
+  }, [role]);
 
   const go = (s: Screen) => setScreen(s);
   const openDebt = (id: string) => {
@@ -2893,13 +3575,20 @@ function AppShell() {
     setScreen("detail");
   };
 
-  const navItems: { key: Screen; icon: LucideIcon; label: string }[] = [
-    { key: "dashboard", icon: LayoutGrid, label: "Inicio" },
-    { key: "wallet", icon: CreditCard, label: "Tarjetas" },
-    { key: "create", icon: Plus, label: "Crear" },
-    { key: "notifications", icon: Bell, label: "Alertas" },
-    { key: "settings", icon: SettingsIcon, label: "Ajustes" },
-  ];
+  const navItems: { key: Screen; icon: LucideIcon; label: string; center?: boolean }[] = isAdmin
+    ? [
+        { key: "dashboard", icon: LayoutGrid, label: "Inicio" },
+        { key: "contracts", icon: FileSignature, label: "Contratos" },
+        { key: "create", icon: Plus, label: "Crear", center: true },
+        { key: "notifications", icon: Bell, label: "Alertas" },
+        { key: "settings", icon: SettingsIcon, label: "Ajustes" },
+      ]
+    : [
+        { key: "dashboard", icon: LayoutGrid, label: "Inicio" },
+        { key: "wallet", icon: CreditCard, label: "Billetera" },
+        { key: "notifications", icon: Bell, label: "Alertas" },
+        { key: "settings", icon: SettingsIcon, label: "Ajustes" },
+      ];
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -2912,7 +3601,7 @@ function AppShell() {
               onClick={toggleDark}
               className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600 dark:bg-white/5 dark:text-slate-300"
             >
-              {dark ? <Sun className="h-4.5 w-4.5 h-5 w-5" /> : <Moon className="h-5 w-5" />}
+              {dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </button>
             <button
               onClick={() => go("notifications")}
@@ -2925,16 +3614,11 @@ function AppShell() {
                 </span>
               )}
             </button>
-            <button onClick={() => go("settings")}>
-              <Avatar name={user.name} color="from-indigo-500 to-violet-600" size={36} />
+            <button onClick={() => go("profile")}>
+              <Avatar name={user.name} avatar={user.avatar} color="from-indigo-500 to-violet-600" size={36} />
             </button>
           </div>
         </div>
-        {screen === "dashboard" && (
-          <div className="mx-auto max-w-2xl px-4 pb-3">
-            <RoleSwitch />
-          </div>
-        )}
       </header>
 
       {/* Content */}
@@ -2947,17 +3631,24 @@ function AppShell() {
               onContracts={() => go("contracts")}
             />
           )}
-          {screen === "create" && (
+          {screen === "create" && isAdmin && (
             <CreateDebt onBack={() => go("dashboard")} onCreated={(d) => openDebt(d.id)} />
           )}
           {screen === "detail" && selected && (
             <DebtDetail debtId={selected} onBack={() => go("dashboard")} />
           )}
-          {screen === "wallet" && <Wallet2 onBack={() => go("dashboard")} />}
-          {screen === "contracts" && <ContractsScreen onBack={() => go("dashboard")} />}
+          {screen === "wallet" && !isAdmin && <Wallet2 onBack={() => go("dashboard")} />}
+          {screen === "contracts" && isAdmin && <ContractsScreen onBack={() => go("dashboard")} />}
+          {screen === "bank" && isAdmin && <BankScreen onBack={() => go("settings")} />}
+          {screen === "profile" && <ProfileScreen onBack={() => go("dashboard")} />}
           {screen === "notifications" && <Notifications onBack={() => go("dashboard")} />}
           {screen === "settings" && (
-            <SettingsScreen onBack={() => go("dashboard")} onWallet={() => go("wallet")} />
+            <SettingsScreen
+              onBack={() => go("dashboard")}
+              onWallet={() => go("wallet")}
+              onBank={() => go("bank")}
+              onProfile={() => go("profile")}
+            />
           )}
         </div>
       </main>
@@ -2967,14 +3658,14 @@ function AppShell() {
         <div className="mx-auto flex max-w-2xl items-center justify-around px-2 py-2">
           {navItems.map((it) => {
             const active = screen === it.key;
-            if (it.key === "create") {
+            if (it.center) {
               return (
                 <button
                   key={it.key}
-                  onClick={() => go("create")}
+                  onClick={() => go(it.key)}
                   className="grid h-12 w-12 -translate-y-3 place-items-center rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-600/40 active:scale-95"
                 >
-                  <Plus className="h-6 w-6" />
+                  <it.icon className="h-6 w-6" />
                 </button>
               );
             }
@@ -3024,7 +3715,25 @@ export default function App() {
   const [authed, setAuthed] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [role, setRole] = useState<Role>("admin");
-  const [user, setUser] = useState({ email: "", name: "Administrador" });
+  const [user, setUser] = useState<{ email: string; name: string; avatar?: string; provider: string }>({
+    email: "",
+    name: "Administrador",
+    provider: "email",
+  });
+  const [prefs, setPrefsState] = useState<Prefs>(() => {
+    try {
+      return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem("2payback.prefs") || "{}") };
+    } catch {
+      return DEFAULT_PREFS;
+    }
+  });
+  const [bank, setBank] = useState<BankAccount>(() => {
+    try {
+      return { ...DEFAULT_BANK, ...JSON.parse(localStorage.getItem("2payback.bank") || "{}") };
+    } catch {
+      return DEFAULT_BANK;
+    }
+  });
   const [debts, setDebts] = useState<Debt[]>(isSupabaseConfigured ? [] : persisted.debts ?? seedDebts());
   const [cards, setCards] = useState<Card[]>(isSupabaseConfigured ? [] : persisted.cards ?? []);
   const [notifications, setNotifications] = useState<AppNotification[]>(
@@ -3040,11 +3749,21 @@ export default function App() {
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
-    const enter = async (u: { id: string; email?: string; user_metadata?: Record<string, unknown> }) => {
+    const enter = async (u: {
+      id: string;
+      email?: string;
+      user_metadata?: Record<string, unknown>;
+      app_metadata?: Record<string, unknown>;
+    }) => {
       setUserId(u.id);
       setUser({
         email: u.email ?? "",
-        name: (u.user_metadata?.full_name as string) ?? (u.user_metadata?.name as string) ?? u.email ?? "Administrador",
+        name:
+          (u.user_metadata?.full_name as string) ??
+          (u.user_metadata?.name as string) ??
+          (u.email ? u.email.split("@")[0] : "Administrador"),
+        avatar: (u.user_metadata?.avatar_url as string) ?? (u.user_metadata?.picture as string) ?? undefined,
+        provider: (u.app_metadata?.provider as string) ?? "email",
       });
       setAuthed(true);
       try {
@@ -3087,10 +3806,61 @@ export default function App() {
     }
   }, [dark, debts, cards, notifications]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("2payback.prefs", JSON.stringify(prefs));
+    } catch {
+      /* ignore */
+    }
+  }, [prefs]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("2payback.bank", JSON.stringify(bank));
+    } catch {
+      /* ignore */
+    }
+  }, [bank]);
+
   const toast = (t: Omit<Toast, "id">) => {
     const id = uid();
     setToasts((p) => [...p, { ...t, id }]);
     setTimeout(() => setToasts((p) => p.filter((x) => x.id !== id)), 3600);
+  };
+
+  const setPrefs: Store["setPrefs"] = (patch) => {
+    setPrefsState((p) => {
+      const next = { ...p, ...patch };
+      if (patch.theme) {
+        const isDark =
+          patch.theme === "auto"
+            ? window.matchMedia("(prefers-color-scheme: dark)").matches
+            : patch.theme === "dark";
+        setDark(isDark);
+      }
+      return next;
+    });
+  };
+
+  const updateProfile: Store["updateProfile"] = (patch) => {
+    setUser((u) => ({ ...u, ...patch }));
+    if (isSupabaseConfigured && supabase && patch.name !== undefined) {
+      supabase.auth.updateUser({ data: { full_name: patch.name } }).catch(() => {});
+    }
+  };
+
+  const connectBank: Store["connectBank"] = (b) => {
+    setBank({ ...b, status: "pending" });
+    toast({ title: "Cuenta enviada a verificación", desc: "Te avisaremos al verificarla.", variant: "info" });
+    setTimeout(() => {
+      setBank((prev) => (prev.status === "pending" ? { ...prev, status: "verified" } : prev));
+      toast({ title: "Cuenta verificada", desc: "Ya puedes recibir pagos.", variant: "success" });
+    }, 2600);
+  };
+
+  const disconnectBank: Store["disconnectBank"] = () => {
+    setBank(DEFAULT_BANK);
+    toast({ title: "Cuenta desconectada", variant: "info" });
   };
 
   const persistErr = (e: unknown) =>
@@ -3142,6 +3912,39 @@ export default function App() {
     return result;
   };
 
+  const removePayment: Store["removePayment"] = (debtId, txId) => {
+    const d = debts.find((x) => x.id === debtId);
+    if (!d) return;
+    const t = d.transactions.find((x) => x.id === txId);
+    if (!t) return;
+    const charges = t.type === "charge" ? d.charges - t.amount : d.charges;
+    const interest = t.type === "interest" ? d.interest - t.amount : d.interest;
+    const paid =
+      t.type === "payment" || t.type === "extra" ? d.totalPaid - t.amount : d.totalPaid;
+    setDebts((prev) =>
+      prev.map((x) =>
+        x.id === debtId
+          ? {
+              ...x,
+              charges: Math.max(0, charges),
+              interest: Math.max(0, interest),
+              totalPaid: Math.max(0, paid),
+              transactions: x.transactions.filter((y) => y.id !== txId),
+            }
+          : x
+      )
+    );
+    if (cloud)
+      dbsvc
+        .deleteMovementDb(t.type, txId, debtId, {
+          charges: Math.max(0, charges),
+          interest: Math.max(0, interest),
+          paid: Math.max(0, paid),
+        })
+        .catch(persistErr);
+    toast({ title: "Movimiento eliminado", desc: `${txMeta[t.type].label} · ${money(t.amount)}`, variant: "info" });
+  };
+
   const setLateInterest: Store["setLateInterest"] = (debtId, on) => {
     setDebts((prev) => prev.map((d) => (d.id === debtId ? { ...d, lateInterestEnabled: on } : d)));
     if (cloud) dbsvc.setLateInterestDb(debtId, on).catch(persistErr);
@@ -3165,6 +3968,11 @@ export default function App() {
     if (c.slot === "primary") setCards((p) => p.map((x) => ({ ...x, slot: "secondary" })));
     setCards((p) => [...p, { ...c, id }]);
     if (cloud && userId) dbsvc.addCardDb(userId, id, c).catch(persistErr);
+  };
+
+  const updateCard: Store["updateCard"] = (cardId, patch) => {
+    setCards((p) => p.map((c) => (c.id === cardId ? { ...c, ...patch } : c)));
+    if (cloud && patch.exp) dbsvc.updateCardDb(cardId, { exp: patch.exp }).catch(persistErr);
   };
 
   const removeCard: Store["removeCard"] = (cardId) => {
@@ -3254,10 +4062,20 @@ export default function App() {
 
   const store: Store = {
     dark,
-    toggleDark: () => setDark((d) => !d),
+    toggleDark: () => {
+      const next = !dark;
+      setDark(next);
+      setPrefsState((p) => ({ ...p, theme: next ? "dark" : "light" }));
+    },
     role,
     setRole,
     user,
+    updateProfile,
+    prefs,
+    setPrefs,
+    bank,
+    connectBank,
+    disconnectBank,
     debts,
     cards,
     notifications,
@@ -3268,11 +4086,17 @@ export default function App() {
       setDebts((p) => [d, ...p]);
       if (cloud && userId) dbsvc.createDebtDb(userId, d).catch(persistErr);
     },
+    updateDebt: (id, patch) => {
+      setDebts((p) => p.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+      if (cloud) dbsvc.updateDebtFieldsDb(id, patch).catch(persistErr);
+    },
     applyPayment,
+    removePayment,
     setLateInterest,
     applyAccruedInterest,
     setPrimaryCard,
     addCard,
+    updateCard,
     removeCard,
     readAllNotifications: () => {
       setNotifications((p) => p.map((n) => ({ ...n, read: true })));
