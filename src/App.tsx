@@ -56,6 +56,8 @@ import {
   CheckCheck,
   type LucideIcon,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import i18n from "./lib/i18n";
 import { supabase, isSupabaseConfigured } from "./lib/supabase";
 import * as dbsvc from "./lib/db";
 import type {
@@ -785,6 +787,7 @@ function ToastHost() {
 
 function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
   const { dark, toggleDark, toast } = useStore();
+  const { t } = useTranslation();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [showPw, setShowPw] = useState(false);
   const [email, setEmail] = useState("");
@@ -871,10 +874,10 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
         <div className="mb-8 flex flex-col items-center text-center">
           <BrandLogo size="lg" />
           <h1 className="mt-6 text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">
-            {mode === "login" ? "Bienvenido de nuevo" : "Crea tu cuenta"}
+            {mode === "login" ? t("auth.welcome") : t("auth.create")}
           </h1>
           <p className="mt-1.5 max-w-xs text-sm text-slate-500 dark:text-slate-400">
-            Administra préstamos, ventas financiadas y acuerdos privados con total claridad.
+            {t("auth.subtitle")}
           </p>
         </div>
 
@@ -891,13 +894,13 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
                     : "text-slate-500 dark:text-slate-400"
                 )}
               >
-                {m === "login" ? "Iniciar sesión" : "Registrarse"}
+                {m === "login" ? t("auth.login") : t("auth.register")}
               </button>
             ))}
           </div>
 
           <form onSubmit={submit} className="space-y-3.5">
-            <Field label="Email" icon={Mail}>
+            <Field label={t("auth.email")} icon={Mail}>
               <Input
                 type="email"
                 value={email}
@@ -907,7 +910,7 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
               />
             </Field>
 
-            <Field label="Contraseña" icon={Lock}>
+            <Field label={t("auth.password")} icon={Lock}>
               <div className="relative">
                 <Input
                   type={showPw ? "text" : "password"}
@@ -928,7 +931,7 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
             </Field>
 
             {mode === "register" && (
-              <Field label="Confirmar contraseña" icon={Lock}>
+              <Field label={t("auth.confirm")} icon={Lock}>
                 <Input
                   type="password"
                   value={pw2}
@@ -954,14 +957,14 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
                 >
                   {remember && <Check className="h-3.5 w-3.5" />}
                 </span>
-                Recordarme
+                {t("auth.remember")}
               </button>
               <button
                 type="button"
                 onClick={() => setForgot(true)}
                 className="text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
               >
-                ¿Olvidaste tu contraseña?
+                {t("auth.forgot")}
               </button>
             </div>
 
@@ -969,11 +972,11 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
               {busy ? (
                 <>
                   <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                  Procesando...
+                  {t("auth.processing")}
                 </>
               ) : (
                 <>
-                  {mode === "login" ? "Iniciar sesión" : "Crear cuenta"}
+                  {mode === "login" ? t("auth.login") : t("auth.createBtn")}
                   <ChevronRight className="h-4 w-4" />
                 </>
               )}
@@ -982,7 +985,7 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
 
           <div className="my-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200 dark:bg-white/10" />
-            <span className="text-xs font-medium text-slate-400">o continúa con</span>
+            <span className="text-xs font-medium text-slate-400">{t("auth.continueWith")}</span>
             <div className="h-px flex-1 bg-slate-200 dark:bg-white/10" />
           </div>
 
@@ -1002,9 +1005,7 @@ function AuthScreen({ onAuth }: { onAuth: (email: string) => void }) {
           </div>
         </Card3>
 
-        <p className="mt-6 text-center text-xs text-slate-400">
-          Al continuar aceptas los Términos y la Política de privacidad de 2PayBack.
-        </p>
+        <p className="mt-6 text-center text-xs text-slate-400">{t("auth.terms")}</p>
       </div>
 
       <Modal open={forgot} onClose={() => setForgot(false)} title="Recuperar contraseña">
@@ -2604,6 +2605,7 @@ function SettingsScreen({
   onProfile: () => void;
 }) {
   const { user, role, prefs, setPrefs, bank, cards, logout, resetData, toast } = useStore();
+  const { t } = useTranslation();
   const isAdmin = role === "admin";
   const [confirmReset, setConfirmReset] = useState(false);
   const [modal, setModal] = useState<null | "password" | "sessions" | "devices" | "legal">(null);
@@ -2635,7 +2637,7 @@ function SettingsScreen({
 
   return (
     <div className="space-y-5">
-      <ScreenHeader title="Configuración" onBack={onBack} />
+      <ScreenHeader title={t("settings.title")} onBack={onBack} />
 
       <Card3 className="flex items-center gap-4 p-4" onClick={onProfile}>
         <Avatar name={user.name} avatar={user.avatar} color="from-indigo-500 to-violet-600" size={56} />
@@ -2647,16 +2649,16 @@ function SettingsScreen({
         <ChevronRight className="h-5 w-5 text-slate-300" />
       </Card3>
 
-      <SGroup title="Cuenta">
+      <SGroup title={t("settings.account")}>
         {isAdmin ? (
-          <SRow icon={Banknote} label="Cuenta bancaria para recibir pagos" desc={bankDesc} onClick={onBank} />
+          <SRow icon={Banknote} label={t("settings.bankAccount")} desc={bankDesc} onClick={onBank} />
         ) : (
-          <SRow icon={CreditCard} label="Métodos de pago" desc={`${cards.length} tarjeta(s) registrada(s)`} onClick={onWallet} />
+          <SRow icon={CreditCard} label={t("settings.paymentMethods")} desc={`${cards.length} tarjeta(s) registrada(s)`} onClick={onWallet} />
         )}
-        <SRow icon={User} label="Perfil" desc="Nombre, foto y datos de la cuenta" onClick={onProfile} />
+        <SRow icon={User} label={t("settings.profile")} desc="Nombre, foto y datos de la cuenta" onClick={onProfile} />
       </SGroup>
 
-      <SGroup title="Notificaciones">
+      <SGroup title={t("settings.notifications")}>
         <SRow
           icon={Banknote}
           label="Confirmaciones de pago"
@@ -2674,13 +2676,13 @@ function SettingsScreen({
         />
       </SGroup>
 
-      <SGroup title="Apariencia">
+      <SGroup title={t("settings.appearance")}>
         <div className="p-3.5">
           <div className="grid grid-cols-3 gap-2">
             {([
-              { v: "light", l: "Claro", icon: Sun },
-              { v: "dark", l: "Oscuro", icon: Moon },
-              { v: "auto", l: "Automático", icon: Sparkles },
+              { v: "light", l: t("settings.light"), icon: Sun },
+              { v: "dark", l: t("settings.dark"), icon: Moon },
+              { v: "auto", l: t("settings.auto"), icon: Sparkles },
             ] as const).map((o) => (
               <button
                 key={o.v}
@@ -2699,10 +2701,10 @@ function SettingsScreen({
         </div>
       </SGroup>
 
-      <SGroup title="Preferencias">
+      <SGroup title={t("settings.preferences")}>
         <SRow
           icon={LayoutGrid}
-          label="Idioma"
+          label={t("settings.language")}
           right={
             <Select
               value={prefs.language}
@@ -2716,7 +2718,7 @@ function SettingsScreen({
         />
         <SRow
           icon={CircleDollarSign}
-          label="Moneda"
+          label={t("settings.currency")}
           right={
             <Select
               value={prefs.currency}
@@ -2732,7 +2734,7 @@ function SettingsScreen({
         />
         <SRow
           icon={Calendar}
-          label="Formato de fecha"
+          label={t("settings.dateFormat")}
           right={
             <Select
               value={prefs.dateFormat}
@@ -2747,28 +2749,28 @@ function SettingsScreen({
         />
       </SGroup>
 
-      <SGroup title="Seguridad">
+      <SGroup title={t("settings.security")}>
         <SRow icon={Lock} label="Cambiar contraseña" desc="Te enviamos un enlace por correo" onClick={() => setModal("password")} />
         <SRow icon={LogOut} label="Cerrar todas las sesiones" onClick={() => setModal("sessions")} />
         <SRow icon={Fingerprint} label="Dispositivos conectados" onClick={() => setModal("devices")} />
         <SRow icon={ShieldCheck} label="Autenticación de dos factores" right={<Badge tone="slate">Próximamente</Badge>} />
       </SGroup>
 
-      <SGroup title="Soporte">
+      <SGroup title={t("settings.support")}>
         <SRow icon={ShieldCheck} label="Centro de ayuda" onClick={() => support("Ayuda 2PayBack")} />
         <SRow icon={Send} label="Contactar soporte" onClick={() => support("Contacto soporte")} />
         <SRow icon={AlertTriangle} label="Reportar un problema" onClick={() => support("Reporte de problema")} />
         <SRow icon={Sparkles} label="Enviar sugerencias" onClick={() => support("Sugerencia")} />
       </SGroup>
 
-      <SGroup title="Información">
+      <SGroup title={t("settings.info")}>
         <SRow icon={ShieldCheck} label="Política de privacidad" onClick={() => { setLegalTitle("Política de privacidad"); setModal("legal"); }} />
         <SRow icon={FileText} label="Términos y condiciones" onClick={() => { setLegalTitle("Términos y condiciones"); setModal("legal"); }} />
         <SRow icon={FileText} label="Licencias" onClick={() => { setLegalTitle("Licencias"); setModal("legal"); }} />
         <SRow icon={LayoutGrid} label="Versión de la aplicación" right={<span className="text-sm font-semibold text-slate-400">2PayBack v1.0</span>} />
       </SGroup>
 
-      <SGroup title="Modo de vista (demo)">
+      <SGroup title={t("settings.viewMode")}>
         <div className="p-3.5">
           <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
             Cambia entre la vista de Administrador y la de Cliente para probar la app.
@@ -3560,6 +3562,7 @@ type Screen =
 
 function AppShell() {
   const { role, dark, toggleDark, notifications, user } = useStore();
+  const { t } = useTranslation();
   const isAdmin = role === "admin";
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [selected, setSelected] = useState<string | null>(null);
@@ -3577,17 +3580,17 @@ function AppShell() {
 
   const navItems: { key: Screen; icon: LucideIcon; label: string; center?: boolean }[] = isAdmin
     ? [
-        { key: "dashboard", icon: LayoutGrid, label: "Inicio" },
-        { key: "contracts", icon: FileSignature, label: "Contratos" },
-        { key: "create", icon: Plus, label: "Crear", center: true },
-        { key: "notifications", icon: Bell, label: "Alertas" },
-        { key: "settings", icon: SettingsIcon, label: "Ajustes" },
+        { key: "dashboard", icon: LayoutGrid, label: t("nav.home") },
+        { key: "contracts", icon: FileSignature, label: t("nav.contracts") },
+        { key: "create", icon: Plus, label: t("nav.create"), center: true },
+        { key: "notifications", icon: Bell, label: t("nav.alerts") },
+        { key: "settings", icon: SettingsIcon, label: t("nav.settings") },
       ]
     : [
-        { key: "dashboard", icon: LayoutGrid, label: "Inicio" },
-        { key: "wallet", icon: CreditCard, label: "Billetera" },
-        { key: "notifications", icon: Bell, label: "Alertas" },
-        { key: "settings", icon: SettingsIcon, label: "Ajustes" },
+        { key: "dashboard", icon: LayoutGrid, label: t("nav.home") },
+        { key: "wallet", icon: CreditCard, label: t("nav.wallet") },
+        { key: "notifications", icon: Bell, label: t("nav.alerts") },
+        { key: "settings", icon: SettingsIcon, label: t("nav.settings") },
       ];
 
   return (
@@ -3829,6 +3832,7 @@ export default function App() {
   };
 
   const setPrefs: Store["setPrefs"] = (patch) => {
+    if (patch.language) i18n.changeLanguage(patch.language);
     setPrefsState((p) => {
       const next = { ...p, ...patch };
       if (patch.theme) {
